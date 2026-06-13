@@ -206,7 +206,7 @@
                 </div>
             </div>
             <!-- 指标 2: Token 使用总量 -->
-            <div class="glass-card rounded-xl p-5 flex flex-col gap-2 col-span-1 md:col-span-2">
+            <div class="glass-card rounded-xl p-5 flex flex-col gap-2 relative overflow-hidden">
                 <div class="flex justify-between items-center">
                     <div class="text-[11px] font-bold text-outline dark:text-outline-variant uppercase tracking-wider" data-i18n="totalTokens">Token总使用量</div>
                     <div class="text-[28px] font-data-mono font-medium text-primary dark:text-primary-fixed-dim" id="valTokens">0</div>
@@ -214,12 +214,16 @@
                 <div class="flex items-end gap-4 h-full pt-2">
                     <div class="flex-1">
                         <div class="flex justify-between text-[13px] font-medium mb-1 font-data-mono">
-                            <span class="text-blue-500 dark:text-blue-400">In: <span id="valTokensIn" class="font-bold">0</span></span>
-                            <span class="text-emerald-500 dark:text-emerald-400">Out: <span id="valTokensOut" class="font-bold">0</span></span>
+                            <span class="text-blue-500 dark:text-blue-400"><span data-i18n="input">输入</span>: <span id="valTokensIn" class="font-bold">0</span></span>
+                            <span class="text-emerald-500 dark:text-emerald-400"><span data-i18n="output">输出</span>: <span id="valTokensOut" class="font-bold">0</span></span>
                         </div>
                         <div class="w-full h-2 bg-outline-variant/20 dark:bg-white/5 rounded-full overflow-hidden flex">
                             <div id="barTokensIn" class="bg-blue-500 h-full" style="width: 50%;"></div>
                             <div id="barTokensOut" class="bg-emerald-500 h-full" style="width: 50%;"></div>
+                        </div>
+                        <div class="flex justify-between items-center text-[13px] text-slate-500 dark:text-slate-400 mt-2">
+                            <span></span>
+                            <span><span data-i18n="totalCost">总成本:</span> <span class="font-data-mono text-red-600 dark:text-red-400 font-bold" id="valTotalCost">$0.0000</span></span>
                         </div>
                     </div>
                 </div>
@@ -241,6 +245,19 @@
                     </div>
                 </div>
             </div>
+            <!-- 指标 4: 内存占用 -->
+            <div class="glass-card rounded-xl p-5 flex flex-col gap-2 relative overflow-hidden">
+                <div class="text-[11px] font-bold text-outline dark:text-outline-variant uppercase tracking-wider" data-i18n="memoryUsage">内存占用</div>
+                <div class="flex items-center justify-between mt-1">
+                    <div class="flex flex-col">
+                        <span class="text-[24px] font-data-mono font-medium text-blue-600 dark:text-blue-400" id="valMemory">0.0 MB</span>
+                        <span class="text-[13px] text-slate-500 dark:text-slate-400 mt-1"><span data-i18n="sysProcess">活跃进程:</span> <span class="font-data-mono font-bold text-on-surface dark:text-white" id="valProcessCount">0</span></span>
+                    </div>
+                    <div class="absolute -right-4 -bottom-4 text-blue-500 opacity-5">
+                        <span class="material-symbols-outlined" style="font-size: 80px;">memory</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- 使用趋势折线图 (SVG 矢量绘图) -->
@@ -259,6 +276,26 @@
                         <span class="material-symbols-outlined text-[12px]">filter_alt</span>
                     </button>
                 </div>
+            </div>
+
+            <!-- 趋势图成本汇总统计 -->
+            <div class="flex flex-wrap gap-x-6 gap-y-2 text-[12px] text-slate-500 dark:text-slate-400 pb-3 border-b border-outline-variant/10 mb-3" id="trendCostSummary">
+                <span class="flex items-center gap-1.5">
+                    <span id="labelSummaryTotal" class="font-medium">今日总成本:</span>
+                    <span id="valSummaryTotal" class="font-data-mono font-bold text-red-600 dark:text-red-400">$0.0000</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                    <span class="font-medium" data-i18n="summaryInputCost">输入总成本:</span>
+                    <span id="valSummaryInput" class="font-data-mono font-bold text-blue-500 dark:text-blue-400">$0.0000</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                    <span class="font-medium" data-i18n="summaryOutputCost">输出总成本:</span>
+                    <span id="valSummaryOutput" class="font-data-mono font-bold text-emerald-600 dark:text-emerald-400">$0.0000</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                    <span class="font-medium" data-i18n="summaryCachedCost">缓存命中成本:</span>
+                    <span id="valSummaryCached" class="font-data-mono font-bold text-purple-600 dark:text-purple-400">$0.0000</span>
+                </span>
             </div>
 
             <!-- 多维度筛选折叠面板 -->
@@ -448,9 +485,11 @@
                         <thead>
                             <tr class="border-b border-outline-variant/50 bg-slate-50/50 dark:bg-white/5">
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="colModel">模型</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="colRequests">请求次数</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="colTokens">Tokens使用量</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="colHitRate">缓存命中率</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colRequests">请求次数</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colTotalTokens">总Tokens</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colInputTokens">输入Tokens</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colOutputTokens">输出Tokens</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colHitRate">缓存命中率</th>
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colCost">总成本</th>
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right" data-i18n="colAvgCost">平均成本</th>
                             </tr>
@@ -465,10 +504,11 @@
                     <table class="w-full text-left table-fixed border-collapse" id="logsTable">
                         <thead>
                             <tr class="border-b border-outline-variant/50 bg-slate-50/50 dark:bg-white/5">
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[11%]" data-i18n="colTime">请求时间</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[23%]" data-i18n="colMethodHost">请求方式 &amp; 域名</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[18%]" data-i18n="colPath">API 接口</th>
-                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[14%]" data-i18n="colModel">所用模型</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[9%]" data-i18n="colTime">请求时间</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[21%]" data-i18n="colMethodHost">请求方式 &amp; 域名</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[16%]" data-i18n="colPath">API 接口</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[10%]" data-i18n="colSession">会话 ID</th>
+                                <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider w-[10%]" data-i18n="colModel">所用模型</th>
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right w-[11%]">Token 消耗</th>
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-right w-[7%]" data-i18n="colPrice">价格</th>
                                 <th class="p-3 text-[11px] font-bold text-outline uppercase tracking-wider text-center w-[6%]" data-i18n="colHitRate">缓存</th>
@@ -529,11 +569,11 @@
         <div class="flex justify-between items-end">
             <div>
                 <h1 class="text-2xl font-bold text-on-surface dark:text-white">账号池管理</h1>
-                <p class="text-xs text-outline dark:text-outline-variant">统一管理多个 Google OAuth 账号，开启池模式可自动进行请求负载均衡</p>
+                <p class="text-xs text-outline dark:text-outline-variant">统一管理多个 Google OAuth 账号，开启负载均衡可自动进行请求分发</p>
             </div>
             <div class="flex items-center gap-4">
                 <div class="flex items-center gap-2 bg-slate-50/50 dark:bg-white/5 px-3 py-1.5 rounded-lg border border-outline-variant/30">
-                    <span class="text-[13px] font-medium text-on-surface dark:text-white">账号池模式</span>
+                    <span class="text-[13px] font-medium text-on-surface dark:text-white">账号负载均衡</span>
                     <div class="relative inline-block w-10 mr-1 align-middle select-none transition duration-200 ease-in">
                         <input class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out" id="poolModeToggle" type="checkbox"/>
                         <label class="toggle-label block overflow-hidden h-5 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer" for="poolModeToggle"></label>
@@ -572,6 +612,12 @@
                 <span class="text-[13px] font-bold text-outline dark:text-outline-variant">已添加的账号</span>
                 <div class="flex items-center gap-2">
                     <span class="text-[12px] font-medium text-primary dark:text-primary-fixed-dim bg-primary/10 px-2 py-0.5 rounded-md" id="accountCountBadge">共 0 个账号</span>
+                    <button id="btnClearSessions"
+                        title="清空所有会话绑定，下次请求将重新均匀分配账号"
+                        class="flex items-center gap-1 text-[11px] font-medium text-outline dark:text-outline-variant hover:text-amber-500 dark:hover:text-amber-400 bg-outline-variant/10 hover:bg-amber-500/10 border border-outline-variant/20 hover:border-amber-500/30 px-2.5 py-1 rounded-lg transition-all duration-200 select-none">
+                        <span class="material-symbols-outlined text-[14px]">cleaning_services</span>
+                        <span>清空会话绑定</span>
+                    </button>
                     <button id="btnRefreshAllQuota"
                         title="刷新所有账号配额"
                         class="flex items-center gap-1 text-[11px] font-medium text-outline dark:text-outline-variant hover:text-primary dark:hover:text-primary-fixed-dim bg-outline-variant/10 hover:bg-primary/10 border border-outline-variant/20 hover:border-primary/30 px-2.5 py-1 rounded-lg transition-all duration-200 select-none">
@@ -685,6 +731,10 @@
                         <span id="modalTime" class="font-data-mono text-on-surface dark:text-white font-semibold">-</span>
                     </div>
                     <div class="flex flex-col gap-1">
+                        <span class="text-outline">会话 ID</span>
+                        <span id="modalSession" class="font-data-mono text-on-surface dark:text-white font-semibold break-all">-</span>
+                    </div>
+                    <div class="flex flex-col gap-1">
                         <span class="text-outline">所用模型</span>
                         <span id="modalModel" class="font-sans text-on-surface dark:text-white font-semibold">-</span>
                     </div>
@@ -703,6 +753,10 @@
                     <div class="flex flex-col gap-1">
                         <span class="text-outline" data-i18n="colPrice">价格</span>
                         <span id="modalCost" class="font-data-mono text-emerald-600 dark:text-emerald-400 font-bold">-</span>
+                    </div>
+                    <div class="flex flex-col gap-1 hidden" id="modalAccountWrapper">
+                        <span class="text-outline">分发账号</span>
+                        <span id="modalAccount" class="font-data-mono text-on-surface dark:text-white font-semibold">-</span>
                     </div>
                 </div>
                 

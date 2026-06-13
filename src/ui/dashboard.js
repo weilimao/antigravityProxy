@@ -40,6 +40,7 @@ const valTokensIn = document.getElementById('valTokensIn');
 const valTokensOut = document.getElementById('valTokensOut');
 const valCached = document.getElementById('valCached');
 const valSavedCost = document.getElementById('valSavedCost');
+const valTotalCost = document.getElementById('valTotalCost');
 const valHitRate = document.getElementById('valHitRate');
 const gaugeCircle = document.getElementById('gaugeCircle');
 const barTokensIn = document.getElementById('barTokensIn');
@@ -125,6 +126,68 @@ function drawTrendChartSVG(trends, range = '7d') {
     const xAxis = document.getElementById('chartXAxis');
 
     if (!trendSvg || !trends || trends.length === 0) return;
+
+    // Calculate total summary stats for the filtered trends
+    let totalCostVal = 0;
+    let totalInputCostVal = 0;
+    let totalOutputCostVal = 0;
+    let totalCachedCostVal = 0;
+
+    trends.forEach(bin => {
+        const binCost = bin.cost || 0;
+        let binInputCost = bin.inputCost;
+        let binOutputCost = bin.outputCost;
+        let binCachedCost = bin.cachedCost;
+
+        if (binInputCost === undefined || binOutputCost === undefined || binCachedCost === undefined) {
+            // Estimate using default rates (Gemini 3.5 Flash)
+            const inputTokens = bin.input || 0;
+            const outputTokens = bin.output || 0;
+            const cachedTokens = bin.cached || 0;
+            const nonCachedIn = Math.max(0, inputTokens - cachedTokens);
+
+            const estInput = nonCachedIn * 1.50 / 1000000;
+            const estOutput = outputTokens * 9.00 / 1000000;
+            const estCached = cachedTokens * 0.375 / 1000000;
+            const estTotal = estInput + estOutput + estCached;
+
+            if (estTotal > 0) {
+                binInputCost = binCost * (estInput / estTotal);
+                binOutputCost = binCost * (estOutput / estTotal);
+                binCachedCost = binCost * (estCached / estTotal);
+            } else {
+                binInputCost = 0;
+                binOutputCost = 0;
+                binCachedCost = 0;
+            }
+        }
+
+        totalCostVal += binCost;
+        totalInputCostVal += binInputCost;
+        totalOutputCostVal += binOutputCost;
+        totalCachedCostVal += binCachedCost;
+    });
+
+    const labelSummaryTotal = document.getElementById('labelSummaryTotal');
+    const valSummaryTotal = document.getElementById('valSummaryTotal');
+    const valSummaryInput = document.getElementById('valSummaryInput');
+    const valSummaryOutput = document.getElementById('valSummaryOutput');
+    const valSummaryCached = document.getElementById('valSummaryCached');
+
+    if (labelSummaryTotal) {
+        const dict = i18n[currentLanguage] || {};
+        let labelKey = 'summaryTotalCostCustom';
+        if (range === 'today') labelKey = 'summaryTotalCostToday';
+        else if (range === '3d') labelKey = 'summaryTotalCost3d';
+        else if (range === '7d') labelKey = 'summaryTotalCost7d';
+        else if (range === '30d') labelKey = 'summaryTotalCost30d';
+        labelSummaryTotal.textContent = dict[labelKey] || '总成本:';
+    }
+
+    if (valSummaryTotal) valSummaryTotal.textContent = `$${totalCostVal.toFixed(4)}`;
+    if (valSummaryInput) valSummaryInput.textContent = `$${totalInputCostVal.toFixed(4)}`;
+    if (valSummaryOutput) valSummaryOutput.textContent = `$${totalOutputCostVal.toFixed(4)}`;
+    if (valSummaryCached) valSummaryCached.textContent = `$${totalCachedCostVal.toFixed(4)}`;
 
     const N = trends.length;
     // With axes moved out of SVG, our drawing width is full viewBox width
@@ -457,6 +520,7 @@ function renderLogsTable() {
         return log.host.toLowerCase().includes(q) || 
                log.path.toLowerCase().includes(q) || 
                log.model.toLowerCase().includes(q) || 
+               (log.sessionId || '').toLowerCase().includes(q) ||
                log.method.toLowerCase().includes(q);
     });
 
@@ -470,10 +534,9 @@ function renderLogsTable() {
     const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
     const paginated = filtered.slice(startIndex, endIndex);
 
-    // Render table
     logsTableBody.innerHTML = '';
     if (paginated.length === 0) {
-        logsTableBody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-outline dark:text-outline-variant italic">${dict.noLogs}</td></tr>`;
+        logsTableBody.innerHTML = `<tr><td colspan="10" class="p-8 text-center text-outline dark:text-outline-variant italic">${dict.noLogs}</td></tr>`;
         valShowingText.textContent = currentLanguage === 'zh' 
             ? `共 0 条记录` 
             : `Showing 0 entries`;
@@ -505,7 +568,13 @@ function renderLogsTable() {
                     <span class="text-on-surface dark:text-white">${log.host}</span>
                 </td>
                 <td class="p-3 text-outline dark:text-outline-variant font-data-mono text-[12px] truncate" title="${log.path}">${log.path}</td>
-                <td class="p-3 font-sans font-medium text-on-surface dark:text-white truncate" title="${log.model}">${log.model}</td>
+                <td class="p-3 text-outline dark:text-outline-variant font-data-mono text-[12px] truncate" title="${log.sessionId || '-'}">${log.sessionId || '-'}</td>
+                <td class="p-3 font-sans font-medium text-on-surface dark:text-white truncate" title="${log.model}">
+                    <div class="flex flex-col min-w-0">
+                        <span class="font-semibold text-on-surface dark:text-white truncate">${log.model}</span>
+                        ${log.account ? `<span class="text-[10px] text-outline dark:text-outline-variant font-data-mono truncate mt-0.5" title="${log.account}">${log.account}</span>` : '<span class="text-[10px] text-slate-400 dark:text-slate-500 font-data-mono truncate mt-0.5">直连</span>'}
+                    </div>
+                </td>
                 <td class="p-3 text-right font-data-mono">
                     <div class="flex flex-col items-end">
                         <span class="text-[10px] text-outline dark:text-outline-variant">${dict.input}: ${log.inTokens.toLocaleString()}</span>
@@ -644,6 +713,19 @@ ipcRenderer.on('state', (event, isInterceptMode) => {
     updateStatusLabel();
 });
 
+ipcRenderer.on('memory-stats-updated', (event, data) => {
+    if (!data) return;
+    const valMemory = document.getElementById('valMemory');
+    if (valMemory && typeof data.total === 'number') {
+        const totalMB = (data.total / (1024 * 1024)).toFixed(1);
+        valMemory.textContent = `${totalMB} MB`;
+    }
+    const valProcessCount = document.getElementById('valProcessCount');
+    if (valProcessCount && typeof data.processCount === 'number') {
+        valProcessCount.textContent = data.processCount;
+    }
+});
+
 ipcRenderer.on('stats-updated', (event, payload) => {
     if (!payload) return;
 
@@ -653,12 +735,15 @@ ipcRenderer.on('stats-updated', (event, payload) => {
 
     // 1. Update Metrics Cards
     valReqs.textContent = stats.totalRequests;
-    valTokens.textContent = stats.totalInputTokens.toLocaleString();
+    valTokens.textContent = (stats.totalInputTokens + stats.totalOutputTokens).toLocaleString();
     
     // In/Out sub breakdown text
     const totalIn = stats.totalInputTokens - stats.totalCachedTokens;
     valTokensIn.textContent = formatCompactNumber(totalIn);
     valTokensOut.textContent = formatCompactNumber(stats.totalOutputTokens);
+    if (valTotalCost) {
+        valTotalCost.textContent = `$${(stats.totalCost || 0).toFixed(4)}`;
+    }
     
     // Set progress bar widths
     const totalSum = totalIn + stats.totalOutputTokens;
@@ -688,7 +773,7 @@ ipcRenderer.on('stats-updated', (event, payload) => {
     const modelEntries = Object.entries(stats.models);
     
     if (modelEntries.length === 0) {
-        modelsTableBody.innerHTML = `<tr><td colspan="6" class="p-8 text-center text-outline dark:text-outline-variant italic">${dict.noData}</td></tr>`;
+        modelsTableBody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-outline dark:text-outline-variant italic">${dict.noData}</td></tr>`;
     } else {
         modelEntries.forEach(([model, data]) => {
             if (model === 'unknown' && data.reqs === 0) return;
@@ -697,17 +782,15 @@ ipcRenderer.on('stats-updated', (event, payload) => {
 
             const modelHitRate = data.inTokens > 0 ? (data.cachedTokens / data.inTokens * 100) : 0;
             const avgCost = data.reqs > 0 ? (data.cost / data.reqs) : 0;
+            const totalTokens = data.inTokens + data.outTokens;
 
             tr.innerHTML = `
                 <td class="p-3 font-sans font-semibold text-on-surface dark:text-white">${model}</td>
-                <td class="p-3">${data.reqs}</td>
-                <td class="p-3 text-right">
-                    <div class="flex flex-col items-end">
-                        <span class="text-[10px] text-outline dark:text-outline-variant">${dict.input}: ${(data.inTokens - data.cachedTokens).toLocaleString()}</span>
-                        <span class="text-on-surface dark:text-white">${dict.output}: ${data.outTokens.toLocaleString()}</span>
-                    </div>
-                </td>
-                <td class="p-3">${modelHitRate.toFixed(1)}%</td>
+                <td class="p-3 text-right">${data.reqs}</td>
+                <td class="p-3 text-right font-semibold">${totalTokens.toLocaleString()}</td>
+                <td class="p-3 text-right text-outline dark:text-outline-variant">${data.inTokens.toLocaleString()}</td>
+                <td class="p-3 text-right text-on-surface dark:text-white">${data.outTokens.toLocaleString()}</td>
+                <td class="p-3 text-right">${modelHitRate.toFixed(1)}%</td>
                 <td class="p-3 text-right text-primary dark:text-primary-fixed-dim font-bold">$${data.cost.toFixed(4)}</td>
                 <td class="p-3 text-right text-outline dark:text-outline-variant">$${avgCost.toFixed(5)}</td>
             `;
@@ -758,11 +841,14 @@ const modalCloseBtnSecondary = document.getElementById('modalCloseBtnSecondary')
 const modalCopyBtn = document.getElementById('modalCopyBtn');
 
 const modalTime = document.getElementById('modalTime');
+const modalSession = document.getElementById('modalSession');
 const modalModel = document.getElementById('modalModel');
 const modalPath = document.getElementById('modalPath');
 const modalTokens = document.getElementById('modalTokens');
 const modalStatus = document.getElementById('modalStatus');
 const modalCost = document.getElementById('modalCost');
+const modalAccount = document.getElementById('modalAccount');
+const modalAccountWrapper = document.getElementById('modalAccountWrapper');
 const modalJsonArea = document.getElementById('modalJsonArea');
 
 function hideModal() {
@@ -773,9 +859,17 @@ function hideModal() {
 
 function showModal(log) {
     modalTime.textContent = log.timestamp || '-';
+    modalSession.textContent = log.sessionId || '-';
     modalModel.textContent = log.model || '-';
     modalPath.textContent = `${log.method || 'POST'} ${log.host || ''}${log.path || ''}`;
     modalCost.textContent = `$${(log.cost || 0).toFixed(6)}`;
+    
+    if (log.account) {
+        modalAccountWrapper.classList.remove('hidden');
+        modalAccount.textContent = log.account;
+    } else {
+        modalAccountWrapper.classList.add('hidden');
+    }
     
     const inT = log.inTokens || 0;
     const outT = log.outTokens || 0;
@@ -1270,6 +1364,7 @@ const accountsEmptyState = document.getElementById('accountsEmptyState');
 const accountCountBadge = document.getElementById('accountCountBadge');
 const btnRefreshAllQuota = document.getElementById('btnRefreshAllQuota');
 const btnRefreshAllIcon = document.getElementById('btnRefreshAllIcon');
+const btnClearSessions = document.getElementById('btnClearSessions');
 
 let isRefreshingAll = false;
 
@@ -1313,6 +1408,32 @@ async function refreshAllQuotas() {
 
 btnRefreshAllQuota.addEventListener('click', refreshAllQuotas);
 
+// 清空会话绑定按钮
+if (btnClearSessions) {
+    btnClearSessions.addEventListener('click', async () => {
+        const icon = btnClearSessions.querySelector('.material-symbols-outlined');
+        const label = btnClearSessions.querySelector('span:last-child');
+        const origLabel = label.textContent;
+        // 加载状态
+        if (icon) icon.classList.add('animate-spin');
+        label.textContent = '清空中...';
+        btnClearSessions.disabled = true;
+        try {
+            const res = await ipcRenderer.invoke('pool:clear-sessions');
+            if (res && res.success) {
+                label.textContent = `已清空 ${res.cleared} 条`;
+                setTimeout(() => { label.textContent = origLabel; }, 2000);
+            }
+        } catch (err) {
+            label.textContent = '清空失败';
+            setTimeout(() => { label.textContent = origLabel; }, 2000);
+        } finally {
+            if (icon) icon.classList.remove('animate-spin');
+            btnClearSessions.disabled = false;
+        }
+    });
+}
+
 
 let isLoadingAuth = false;
 
@@ -1353,8 +1474,23 @@ window.startLogin = async function(provider) {
     }
 };
 
+function updatePoolModeUI() {
+    const isPool = poolModeToggle.checked;
+    const label = poolModeToggle.nextElementSibling;
+    if (!label) return;
+    
+    if (isPool) {
+        poolModeToggle.className = 'toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 border-primary appearance-none cursor-pointer translate-x-5 transition-transform duration-200 ease-in-out';
+        label.className = 'toggle-label block overflow-hidden h-5 rounded-full bg-primary cursor-pointer';
+    } else {
+        poolModeToggle.className = 'toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+        label.className = 'toggle-label block overflow-hidden h-5 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer';
+    }
+}
+
 poolModeToggle.addEventListener('change', (e) => {
     ipcRenderer.send('pool:toggle', e.target.checked);
+    updatePoolModeUI();
 });
 
 function getRelativeResetTime(resetTime) {
@@ -1382,7 +1518,7 @@ function getRelativeResetTime(resetTime) {
     }
 }
 
-function renderQuotaBars(containerEl, buckets) {
+function renderQuotaBars(containerEl, buckets, cooldowns = {}) {
     containerEl.innerHTML = '';
     if (!buckets || buckets.length === 0) {
         containerEl.innerHTML = '<span class="text-[10px] text-outline/50 italic">暂无配额数据</span>';
@@ -1407,15 +1543,40 @@ function renderQuotaBars(containerEl, buckets) {
         Object.keys(groups).forEach((groupName, idx) => {
             const groupBuckets = groups[groupName];
             
+            // Determine category
+            const isClaude = groupName.toLowerCase().includes('claude');
+            const category = isClaude ? 'claude' : 'gemini';
+            
+            // Check if this category is in cooldown
+            let isCategoryCooling = false;
+            let categoryCooldownUntil = 0;
+            if (cooldowns && cooldowns[category]) {
+                const now = Date.now();
+                if (cooldowns[category] > now) {
+                    isCategoryCooling = true;
+                    categoryCooldownUntil = cooldowns[category];
+                }
+            }
+
             const groupContainer = document.createElement('div');
             // 如果不是第一个组，增加顶部间距
             groupContainer.className = `flex flex-col gap-2 bg-[#f8fafc]/60 dark:bg-[#20293d]/30 border border-slate-100 dark:border-slate-800/30 rounded-lg p-2.5 ${idx > 0 ? 'mt-2' : 'mt-1'}`;
             
             const groupTitle = document.createElement('div');
-            groupTitle.className = 'text-[10px] font-bold text-on-surface dark:text-white flex items-center gap-1.5 border-b border-outline-variant/10 pb-1.5 mb-1';
+            groupTitle.className = 'text-[10px] font-bold text-on-surface dark:text-white flex items-center justify-between border-b border-outline-variant/10 pb-1.5 mb-1';
+            
+            let cooldownBadge = '';
+            if (isCategoryCooling) {
+                const dateStr = new Date(categoryCooldownUntil).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                cooldownBadge = `<span class="px-1 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[8px] font-bold border border-amber-500/20">${dateStr} 恢复</span>`;
+            }
+
             groupTitle.innerHTML = `
-                <span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
-                <span>${groupName}</span>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full ${isCategoryCooling ? 'bg-amber-500' : 'bg-primary'} animate-pulse"></span>
+                    <span>${groupName}</span>
+                </div>
+                ${cooldownBadge}
             `;
             groupContainer.appendChild(groupTitle);
 
@@ -1481,9 +1642,9 @@ function renderQuotaBars(containerEl, buckets) {
     }
 }
 
-async function loadAccountQuota(accountId, containerEl, refreshBtn, force = false) {
+async function loadAccountQuota(accountId, containerEl, refreshBtn, force = false, cooldowns = {}) {
     if (!force && quotaCache[accountId]) {
-        renderQuotaBars(containerEl, quotaCache[accountId]);
+        renderQuotaBars(containerEl, quotaCache[accountId], cooldowns);
         return;
     }
     refreshBtn.classList.add('animate-spin');
@@ -1494,7 +1655,7 @@ async function loadAccountQuota(accountId, containerEl, refreshBtn, force = fals
             containerEl.innerHTML = `<span class="text-[10px] text-red-400">${result.error}</span>`;
         } else {
             quotaCache[accountId] = result.buckets;
-            renderQuotaBars(containerEl, result.buckets);
+            renderQuotaBars(containerEl, result.buckets, cooldowns);
         }
     } catch (e) {
         containerEl.innerHTML = `<span class="text-[10px] text-red-400">请求失败</span>`;
@@ -1550,9 +1711,41 @@ function renderAccounts(accounts) {
             <span class="text-[11px] text-outline mt-0.5 truncate">添加于: ${new Date(acc.addedAt).toLocaleString()}</span>
         `;
         
+        let isCooling = false;
+        let coolingCategories = [];
+        let maxCooldownTime = 0;
+        const now = Date.now();
+        if (acc.cooldowns) {
+            Object.entries(acc.cooldowns).forEach(([cat, until]) => {
+                if (until && until > now) {
+                    coolingCategories.push(cat);
+                    if (until > maxCooldownTime) {
+                        maxCooldownTime = until;
+                    }
+                }
+            });
+        }
+        if (coolingCategories.length === 0 && acc.cooldownUntil) {
+            if (acc.cooldownUntil > now) {
+                coolingCategories.push('all');
+                maxCooldownTime = acc.cooldownUntil;
+            }
+        }
+        isCooling = coolingCategories.length > 0;
+        
+        // Only show overall cooling state if ALL model categories are cooling down
+        const totalCategoriesCount = 2;
+        const isOverallCooling = coolingCategories.includes('all') || (coolingCategories.length === totalCategoriesCount);
+
         const statusBadge = document.createElement('div');
-        statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
-        statusBadge.innerHTML = '<span class="material-symbols-outlined text-[12px]">check_circle</span> 有效';
+        if (isOverallCooling) {
+            statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-900/30 dark:text-amber-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
+            const dateStr = new Date(maxCooldownTime).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+            statusBadge.innerHTML = `<span class="material-symbols-outlined text-[12px]">hourglass_empty</span> 冷静中 (${dateStr}恢复)`;
+        } else {
+            statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
+            statusBadge.innerHTML = '<span class="material-symbols-outlined text-[12px]">check_circle</span> 有效';
+        }
         
         header.appendChild(info);
         header.appendChild(statusBadge);
@@ -1579,7 +1772,7 @@ function renderAccounts(accounts) {
         quotaSection.appendChild(quotaBars);
 
         // Bind refresh button
-        refreshBtn.onclick = () => loadAccountQuota(acc.id, quotaBars, refreshBtn, true);
+        refreshBtn.onclick = () => loadAccountQuota(acc.id, quotaBars, refreshBtn, true, acc.cooldowns);
 
         // ---- Footer ----
         const footer = document.createElement('div');
@@ -1602,7 +1795,7 @@ function renderAccounts(accounts) {
         accountsList.appendChild(card);
 
         // Auto-load quota on render
-        loadAccountQuota(acc.id, quotaBars, refreshBtn, false);
+        loadAccountQuota(acc.id, quotaBars, refreshBtn, false, acc.cooldowns);
     });
 }
 
@@ -1612,6 +1805,7 @@ ipcRenderer.on('accounts-res', (event, data) => {
     }
     if (typeof data.poolMode !== 'undefined') {
         poolModeToggle.checked = data.poolMode;
+        updatePoolModeUI();
     }
 });
 

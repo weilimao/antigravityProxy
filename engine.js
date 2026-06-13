@@ -9,6 +9,7 @@ const { app } = require('electron');
 const { Proxy } = require('http-mitm-proxy');
 const { PassThrough } = require('stream');
 const statsTracker = require('./src/core/stats');
+const accountManager = require('./src/core/accountManager');
 
 class ProxyEngine extends EventEmitter {
     constructor() {
@@ -218,10 +219,14 @@ class ProxyEngine extends EventEmitter {
                     }
                 }
 
+                // 提取粘性会话 Key（在 attemptRequest 外提取一次，确保整个请求过程包含重试使用相同会话 Key）
+                const sessionKey = require('./src/core/sessionRouter').extractSessionKey(req);
+
                 // Logging details helper
                 let inTokens = 0, outTokens = 0, cachedTokens = 0;
                 let cacheStatus = 'NONE';
                 let logged = false;
+                let allocatedAccount = null;
 
                 const logRequestToTracker = (statusCode) => {
                     if (logged) return;
@@ -247,12 +252,14 @@ class ProxyEngine extends EventEmitter {
                         host: targetHost,
                         path: targetPath,
                         model: currentModel,
+                        account: allocatedAccount,
                         inTokens,
                         outTokens,
                         cachedTokens,
                         cacheStatus,
                         statusCode,
-                        requestBody
+                        requestBody,
+                        sessionId: sessionKey
                     });
 
                     // Emit to update main window stats
@@ -272,14 +279,21 @@ class ProxyEngine extends EventEmitter {
                         // --- 账号池 token 注入 ---
                         const accountManager = require('./src/core/accountManager');
                         const customHeaders = { ...req.headers, host: targetHost };
-                        const poolToken = accountManager.getNextToken();
+                        const poolAccount = accountManager.getAccountBySticky(
+                            sessionKey,
+                            currentModel,
+                            (msg) => this.emit('log', msg)
+                        );
                         let finalReqBody = reqBody;
 
-                        if (poolToken) {
-                            customHeaders['authorization'] = `Bearer ${poolToken}`;
-                            if (attemptIndex === 1) {
-                                const acc = accountManager.accounts[accountManager.currentIndex === 0 ? accountManager.accounts.length - 1 : accountManager.currentIndex - 1];
-                                this.emit('log', `🔀 [Pool Mode] Request injected with pool token (Account: ${acc?.email} | ${acc?.provider})`);
+                        if (poolAccount) {
+                            customHeaders['authorization'] = `Bearer ${poolAccount.access_token}`;
+                            allocatedAccount = poolAccount.email;
+                            lastUsedAccountObj = poolAccount; // 外部闭包捕获，以便重试出错时能够精确定位冷静账号
+                            if (attemptIndex === 0) {
+                                this.emit('log', `⚖️ [负载均衡] 请求已分配账号: ${poolAccount.email} (${poolAccount.provider}) | 目标模型: ${currentModel}`);
+                            } else {
+                                this.emit('log', `⚖️ [负载均衡] 请求重试，重新分配账号: ${poolAccount.email} (${poolAccount.provider}) | 目标模型: ${currentModel}`);
                             }
                         }
                         
@@ -292,7 +306,7 @@ class ProxyEngine extends EventEmitter {
                                     const newBodyStr = JSON.stringify(bodyJson);
                                     finalReqBody = Buffer.from(newBodyStr, 'utf8');
                                     customHeaders['content-length'] = finalReqBody.length;
-                                    if (attemptIndex === 1) {
+                                    if (attemptIndex === 0) {
                                         this.emit('log', `🛡️ Stripped 'project' ID from payload to avoid IDE default project quota 429.`);
                                     }
                                 }
@@ -310,6 +324,40 @@ class ProxyEngine extends EventEmitter {
                         };
 
                         const proxyReq = https.request(options, (proxyRes) => {
+                            // 429 Quota/Rate Limit Exhausted
+                            if (proxyRes.statusCode === 429 && !targetPath.includes('retrieveUserQuota')) {
+                                const resChunks = [];
+                                proxyRes.on('data', chunk => resChunks.push(chunk));
+                                proxyRes.on('end', () => {
+                                    const resBody = Buffer.concat(resChunks);
+                                    let bodyStr = '';
+                                    try {
+                                        if (proxyRes.headers['content-encoding'] === 'gzip') {
+                                            bodyStr = zlib.gunzipSync(resBody).toString('utf8');
+                                        } else if (proxyRes.headers['content-encoding'] === 'deflate') {
+                                            bodyStr = zlib.inflateSync(resBody).toString('utf8');
+                                        } else {
+                                            bodyStr = resBody.toString('utf8');
+                                        }
+                                    } catch (e) {
+                                        bodyStr = resBody.toString('utf8');
+                                    }
+
+                                    const isQuotaError = bodyStr.includes('RESOURCE_EXHAUSTED') || 
+                                                         bodyStr.includes('quota') || 
+                                                         bodyStr.includes('exhausted') || 
+                                                         bodyStr.includes('limit') ||
+                                                         bodyStr.includes('MODEL_CAPACITY_EXHAUSTED');
+
+                                    if (isQuotaError) {
+                                        reject(new Error('QUOTA_EXHAUSTED'));
+                                    } else {
+                                        resolve({ isRetryable: false, proxyRes, bodyBuffer: resBody });
+                                    }
+                                });
+                                return;
+                            }
+
                             // 503 Capacity Exhausted
                             if (proxyRes.statusCode === 503) {
                                 const resChunks = [];
@@ -433,9 +481,12 @@ class ProxyEngine extends EventEmitter {
                     });
                 };
 
-                for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
+                let lastUsedAccountObj = null;
+                const maxRetries = 20;
+
+                for (let attempt = 0; attempt <= maxRetries; attempt++) {
                     try {
-                        if (attempt > 0) this.emit('log', `${logPrefix} Attempt ${attempt + 1}/${this.MAX_RETRIES + 1} ...`);
+                        if (attempt > 0) this.emit('log', `${logPrefix} ⚖️ 正在进行负载均衡第 ${attempt + 1}/${maxRetries + 1} 次尝试...`);
                         const result = await attemptRequest(attempt);
 
                         if (attempt > 0) this.emit('log', `${logPrefix} Response Status: ${result.proxyRes.statusCode}`);
@@ -449,23 +500,89 @@ class ProxyEngine extends EventEmitter {
                         return;
 
                     } catch (error) {
-                        if (error.message === 'CAPACITY_EXHAUSTED' || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
-                            if (attempt === this.MAX_RETRIES) {
-                                this.emit('log', `${logPrefix} ❌ Error: Max retries reached.`);
-                                logRequestToTracker(503);
-                                res.writeHead(503, { 'Content-Type': 'application/json' });
-                                res.end(JSON.stringify({ error: { code: 503, message: "Proxy exhausted max retries", status: "UNAVAILABLE" } }));
-                                return;
+                        const isRetryableError = error.message === 'CAPACITY_EXHAUSTED' || 
+                                                 error.message === 'QUOTA_EXHAUSTED' || 
+                                                 error.code === 'ECONNRESET' || 
+                                                 error.code === 'ETIMEDOUT';
+
+                        // 额度空置触发冷静期隔离
+                        if (lastUsedAccountObj && (error.message === 'CAPACITY_EXHAUSTED' || error.message === 'QUOTA_EXHAUSTED')) {
+                            const accId = lastUsedAccountObj.id;
+                            const email = lastUsedAccountObj.email;
+                            const currentAccountObj = lastUsedAccountObj; // 闭包防污染
+                            
+                            this.emit('log', `⚠️ [负载均衡] 检测到账号 ${email} 额度已耗尽 (Error: ${error.message})。正在获取其配额恢复时间并标记冷静期...`);
+                            
+                            // 1. 立即标记冷静状态，防止在当下立即发起的下一次 attempt 中被重复选中
+                            accountManager.setAccountCooldown(accId, Date.now() + 5 * 60 * 1000, currentModel); // 默认冷静 5 分钟
+                            
+                            // 2. 异步向谷歌查询配额重置时间以修正冷静期
+                            (async () => {
+                                try {
+                                    const quotaService = require('./src/core/quotaService');
+                                    const res = await quotaService.fetchQuota(currentAccountObj, accountManager);
+                                    let cooldownTime = null;
+                                    
+                                    if (res && res.buckets) {
+                                        // 优先考虑周配额
+                                        const weeklyBuckets = res.buckets.filter(b => b.modelId && b.modelId.includes('Weekly'));
+                                        const exhaustedWeekly = weeklyBuckets.find(b => b.remainingFraction === 0 && b.resetTime);
+                                        if (exhaustedWeekly) {
+                                            cooldownTime = new Date(exhaustedWeekly.resetTime).getTime();
+                                            this.emit('log', `⏳ [负载均衡] 账号 ${email} 周额度空置，冷静期截止至 ${new Date(cooldownTime).toLocaleString()}`);
+                                        } else {
+                                            // 其次考虑五小时配额
+                                            const fiveHourBuckets = res.buckets.filter(b => b.modelId && b.modelId.includes('Five Hour'));
+                                            const exhaustedFiveHour = fiveHourBuckets.find(b => b.remainingFraction === 0 && b.resetTime);
+                                            if (exhaustedFiveHour) {
+                                                cooldownTime = new Date(exhaustedFiveHour.resetTime).getTime();
+                                                this.emit('log', `⏳ [负载均衡] 账号 ${email} 5小时额度空置，冷静期截止至 ${new Date(cooldownTime).toLocaleString()}`);
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (cooldownTime) {
+                                        accountManager.setAccountCooldown(accId, cooldownTime, currentModel);
+                                    } else {
+                                        this.emit('log', `⏳ [负载均衡] 无法解析到账号 ${email} 具体的重置时间，默认冷静期延长至 10 分钟。`);
+                                        accountManager.setAccountCooldown(accId, Date.now() + 10 * 60 * 1000, currentModel);
+                                    }
+                                } catch (e) {
+                                    console.error('[Engine] Cooldown fetch failed:', e.message);
+                                }
+                            })();
+                        }
+
+                        // 判断对于 QUOTA_EXHAUSTED 是否需要继续重试
+                        let shouldRetry = isRetryableError && attempt < maxRetries;
+                        if (error.message === 'QUOTA_EXHAUSTED') {
+                            const hasAvailableAccounts = accountManager.getPoolMode() && accountManager.accounts.some(a => {
+                                const category = accountManager.getModelCategory(currentModel);
+                                const cooldown = a.cooldowns ? a.cooldowns[category] : a.cooldownUntil;
+                                return !cooldown || Date.now() >= cooldown;
+                            });
+                            if (!hasAvailableAccounts) {
+                                shouldRetry = false;
                             }
+                        }
+
+                        if (shouldRetry) {
                             const jitter = Math.random() * 500;
-                            const delay = (this.BASE_DELAY_MS * Math.pow(2, attempt)) + jitter;
-                            this.emit('log', `${logPrefix} ⚠️ Capacity exhausted (503). Retrying in ${Math.round(delay)}ms...`);
+                            const baseDelay = this.BASE_DELAY_MS * Math.pow(2, attempt);
+                            const delay = Math.min(baseDelay, 10000) + jitter; // 限制单次等待延迟最大在 10s + 抖动 左右
+                            this.emit('log', `${logPrefix} ⚠️ 请求失败 (${error.message || error.code})。负载均衡将在 ${Math.round(delay)}ms 后自动切换账号重试...`);
                             await this.sleep(delay);
                         } else {
-                            this.emit('log', `${logPrefix} ❌ Unhandled Error: ${error.message}`);
-                            logRequestToTracker(500);
-                            res.writeHead(500);
-                            res.end("Internal Proxy Error");
+                            this.emit('log', `${logPrefix} ❌ [负载均衡] 尝试失败: ${error.message || error.code || '所有可用账号额度均已耗尽'}`);
+                            logRequestToTracker(error.message === 'QUOTA_EXHAUSTED' ? 429 : 503);
+                            res.writeHead(error.message === 'QUOTA_EXHAUSTED' ? 429 : 503, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ 
+                                error: { 
+                                    code: error.message === 'QUOTA_EXHAUSTED' ? 429 : 503, 
+                                    message: error.message === 'QUOTA_EXHAUSTED' ? "Active accounts quota exhausted" : "Proxy connection failed", 
+                                    status: "RESOURCE_EXHAUSTED" 
+                                } 
+                            }));
                             return;
                         }
                     }

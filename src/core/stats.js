@@ -4,7 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { calculateCost } = require('./pricing');
+const { calculateCost, getPricingForModel } = require('./pricing');
 
 class StatsTracker {
     constructor() {
@@ -54,6 +54,12 @@ class StatsTracker {
      */
     trackRequest(modelName, inTokens, outTokens, cachedTokens = 0) {
         const cost = calculateCost(modelName, inTokens, outTokens, cachedTokens);
+        
+        const pricing = getPricingForModel(modelName);
+        const nonCachedIn = Math.max(0, inTokens - cachedTokens);
+        const inputCost = parseFloat((nonCachedIn * pricing.input / 1000000).toFixed(6));
+        const outputCost = parseFloat((outTokens * pricing.output / 1000000).toFixed(6));
+        const cachedCost = parseFloat((cachedTokens * pricing.cached / 1000000).toFixed(6));
 
         // 1. Update overall stats
         this.stats.totalRequests++;
@@ -75,7 +81,7 @@ class StatsTracker {
         m.cost = parseFloat((m.cost + cost).toFixed(6));
 
         // 3. Update hourly trends
-        this.updateTrends(inTokens, outTokens, cachedTokens, cost);
+        this.updateTrends(inTokens, outTokens, cachedTokens, cost, inputCost, outputCost, cachedCost);
 
         // 4. Trigger async save
         this.scheduleSave();
@@ -84,7 +90,7 @@ class StatsTracker {
     /**
      * Updates the hourly usage trends array
      */
-    updateTrends(inTokens, outTokens, cachedTokens, cost) {
+    updateTrends(inTokens, outTokens, cachedTokens, cost, inputCost = 0, outputCost = 0, cachedCost = 0) {
         const now = new Date();
         const hourLabel = `${String(now.getHours()).padStart(2, '0')}:00`;
         const dateLabel = now.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
@@ -92,7 +98,17 @@ class StatsTracker {
 
         let currentBin = this.trends.find(bin => bin.time === timeKey);
         if (!currentBin) {
-            currentBin = { time: timeKey, input: 0, output: 0, cached: 0, cacheCreated: 0, cost: 0 };
+            currentBin = { 
+                time: timeKey, 
+                input: 0, 
+                output: 0, 
+                cached: 0, 
+                cacheCreated: 0, 
+                cost: 0,
+                inputCost: 0,
+                outputCost: 0,
+                cachedCost: 0
+            };
             this.trends.push(currentBin);
             // Limit to last 720 data points (30 days of hourly bins)
             if (this.trends.length > 720) {
@@ -107,6 +123,10 @@ class StatsTracker {
             currentBin.cacheCreated = 0;
         }
         currentBin.cost = parseFloat((currentBin.cost + cost).toFixed(6));
+        
+        currentBin.inputCost = parseFloat(((currentBin.inputCost || 0) + inputCost).toFixed(6));
+        currentBin.outputCost = parseFloat(((currentBin.outputCost || 0) + outputCost).toFixed(6));
+        currentBin.cachedCost = parseFloat(((currentBin.cachedCost || 0) + cachedCost).toFixed(6));
     }
 
     /**
@@ -138,7 +158,9 @@ class StatsTracker {
             cacheStatus: reqLog.cacheStatus || 'NONE',
             statusCode: reqLog.statusCode || 200,
             cost: calculateCost(reqLog.model, reqLog.inTokens, reqLog.outTokens, reqLog.cachedTokens),
-            requestBody: reqLog.requestBody || null
+            account: reqLog.account || null,
+            requestBody: reqLog.requestBody || null,
+            sessionId: reqLog.sessionId || '-'
         };
 
         this.requests.unshift(logItem);
@@ -238,8 +260,13 @@ class StatsTracker {
             const cached = Math.random() > 0.4 ? Math.round(input * (Math.random() * 0.6 + 0.2)) : 0;
             // 缓存创建量
             const cacheCreated = Math.round(input * (Math.random() * 0.3 + 0.1));
-            // 成本
-            const cost = parseFloat(((input * 0.000075 + output * 0.0003) / 1000).toFixed(6));
+            
+            // Calculate components precisely for Gemini 3.5 Flash default pricing
+            const nonCachedIn = Math.max(0, input - cached);
+            const inputCost = parseFloat((nonCachedIn * 1.50 / 1000000).toFixed(6));
+            const outputCost = parseFloat((output * 9.00 / 1000000).toFixed(6));
+            const cachedCost = parseFloat((cached * 0.375 / 1000000).toFixed(6));
+            const cost = parseFloat((inputCost + outputCost + cachedCost).toFixed(6));
 
             this.trends.push({
                 time: `${dateLabel} ${hourLabel}`,
@@ -247,7 +274,10 @@ class StatsTracker {
                 output,
                 cached,
                 cacheCreated,
-                cost
+                cost,
+                inputCost,
+                outputCost,
+                cachedCost
             });
         }
     }

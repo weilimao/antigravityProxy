@@ -366,6 +366,7 @@ function addLogToBuffer(msg) {
     }
     writeToFileLog(formatted);
 }
+global.addLogToBuffer = addLogToBuffer;
 
 // Base64 generic proxy icon (16x16 standard system tray size)
 const iconBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAC0SURBVDhPzZExDoQwDATz/x9NQUFDR0FDRUv/v0BDQ0v/P0BDRXvvvS2yItnZ2M4s2yN/5xOQYg2eYI1c8ARrrA3f8IE1vMMHFuQEH/CBE1yQE/wA4zMccEFO8AOMz3DABTkh11f4gROs4R0+sIY1fMMH1mCNXPAEa1CDP/ADz1CDP/ADD7jBE6zBGn7gB56hBnf4gQfc4AlW5IQf+IFnqMEdftA11OQOP/AONciyH/gT/0C+/QO82g2f9kYc4QAAAABJRU5ErkJggg==';
@@ -506,6 +507,24 @@ function createWindow() {
     mainWindow.loadFile('index.html');
     // mainWindow.webContents.openDevTools(); // 已禁用：不默认打开开发工具
 
+    // 定期更新应用内存占用和活跃进程数并发送给渲染进程
+    let memoryTimer = setInterval(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            clearInterval(memoryTimer);
+            return;
+        }
+        try {
+            const metrics = app.getAppMetrics();
+            const totalMemoryKB = metrics.reduce((sum, m) => sum + (m.memory.workingSetSize || 0), 0);
+            mainWindow.webContents.send('memory-stats-updated', {
+                total: totalMemoryKB * 1024,
+                processCount: metrics.length
+            });
+        } catch (e) {
+            console.error('Failed to send memory stats:', e);
+        }
+    }, 2000);
+
     mainWindow.on('close', (event) => {
         if (!isQuitting) {
             event.preventDefault();
@@ -570,12 +589,15 @@ app.whenReady().then(async () => {
 
     // 初始化账号管理器
     accountManager.init(settings.getActiveDataDirectory());
+    // 初始化粘性会话路由器（加载持久化绑定关系）
+    const sessionRouter = require('./src/core/sessionRouter');
+    sessionRouter.init(settings.getActiveDataDirectory());
 
     // 监听账号管理器更新，通知 UI
-    accountManager.on('accounts-updated', (accounts) => {
+    accountManager.on('accounts-updated', () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('accounts-res', {
-                accounts,
+                accounts: accountManager.getAccounts(),
                 poolMode: accountManager.getPoolMode()
             });
         }
@@ -632,13 +654,25 @@ ipcMain.on('pool:toggle', (event, enable) => {
     }
 });
 
+// 手动清空粘性会话绑定（UI 按钮触发）
+ipcMain.handle('pool:clear-sessions', () => {
+    const sessionRouter = require('./src/core/sessionRouter');
+    const count = sessionRouter.clearAllAndSave();
+    addLogToBuffer(`🧹 [粘性路由] 手动清空所有会话绑定，共 ${count} 条。下次请求将重新均匀分配账号。`);
+    return { success: true, cleared: count };
+});
+
 // 按账号 ID 查询配额
 ipcMain.handle('quota:fetch', async (event, accountId) => {
     const account = accountManager.accounts.find(a => a.id === accountId);
     if (!account) return { error: 'Account not found', buckets: [] };
     try {
         // 传入完整 account（含 refresh_token）以便 quotaService 自动刷新过期 token
-        return await quotaService.fetchQuota(account, accountManager);
+        const res = await quotaService.fetchQuota(account, accountManager);
+        if (res && res.buckets) {
+            accountManager.updateAccountCooldownFromQuota(accountId, res.buckets);
+        }
+        return res;
     } catch (err) {
         return { error: err.message, buckets: [] };
     }
@@ -721,6 +755,9 @@ ipcMain.handle('settings:change-dir', async (event) => {
         
         const pricing = require('./src/core/pricing');
         pricing.updatePath(targetDir);
+
+        const sessionRouter = require('./src/core/sessionRouter');
+        sessionRouter.updatePath(targetDir);
 
         event.sender.send('settings:migration-progress', { step: 'patch-externals', status: '正在更新外部编辑器代理补丁...' });
         // 更新 IDE 及 CLI 设置的证书路径
@@ -810,6 +847,11 @@ ipcMain.on('reset-pricing', (event) => {
 
 app.on('before-quit', () => {
     engine.stop();
+    // 退出时触发最终写盘（持久化当前会话绑定，下次启动时继续复用）
+    try {
+        const sessionRouter = require('./src/core/sessionRouter');
+        sessionRouter._saveToDisk();
+    } catch (e) {}
     // Use synchronous operations during exit to ensure execution finishes before Electron quits
     try {
         const appData = app.getPath('appData');
