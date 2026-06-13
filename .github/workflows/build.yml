@@ -1,0 +1,32 @@
+name: Build and Publish Electron App
+
+on:
+  push:
+    tags:
+      - 'v*' # 当推送形如 v1.0.1 的 tag 时触发自动打包发布
+
+permissions:
+  contents: write # 赋予 Action 往 Releases 写入二进制文件的权限
+
+jobs:
+  release:
+    name: Build & Publish (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and Publish
+        run: npm run publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

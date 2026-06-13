@@ -5,12 +5,35 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win nsis"
+    "build": "electron-builder --win nsis",
+    "publish": "node scripts/publish.js"
   },
   "author": "weilimao",
-  "repository": "github:weilimao/antigravity-proxy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weilimao/antigravityProxy.git"
+  },
   "build": {
     "appId": "com.weilimao.antigravityproxy",
+    "productName": "Antigravity Proxy",
+    "artifactName": "antigravity-proxy-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "engine.js",
+      "index.html",
+      "src/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "weilimao",
+        "repo": "antigravityProxy"
+      }
+    ],
     "win": {
       "target": "nsis",
       "icon": null

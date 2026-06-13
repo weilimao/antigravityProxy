@@ -679,6 +679,46 @@
                 <div id="migrationStatusMsg" class="text-[12px] text-outline mt-1 font-medium"></div>
             </div>
         </div>
+
+        <!-- 软件更新卡片 -->
+        <div class="glass-card rounded-xl p-6 flex flex-col gap-4">
+            <h2 class="text-[15px] font-bold text-on-surface dark:text-white flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary text-[20px]">system_update_alt</span>
+                <span data-i18n="updateTitle">软件更新</span>
+            </h2>
+            <p class="text-xs text-outline leading-relaxed" data-i18n="updateTip">
+                检查并获取 Antigravity Proxy 的最新版本。建议您保持软件为最新版本以获得最佳体验和最新功能。
+            </p>
+            
+            <div class="flex items-center justify-between border-t border-outline-variant/20 pt-4 mt-2">
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="currentVersionLabel">当前版本</span>
+                    <span id="lblCurrentVersion" class="font-data-mono text-[13px] text-on-surface dark:text-white font-semibold">v1.0.0</span>
+                </div>
+                <button id="btnCheckUpdate" class="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-md text-[13px] font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer">
+                    <span class="material-symbols-outlined text-[16px] animate-none" id="iconCheckUpdate">sync</span>
+                    <span id="lblBtnCheckUpdate" data-i18n="btnCheckUpdate">检查更新</span>
+                </button>
+            </div>
+            
+            <!-- 更新状态/进度区 (默认隐藏) -->
+            <div id="updateStatusContainer" class="hidden text-[12px] p-4 rounded-xl border border-outline-variant/20 bg-slate-50/50 dark:bg-white/5 flex flex-col gap-2 mt-2">
+                <div class="font-bold flex items-center gap-1.5 text-on-surface dark:text-white">
+                    <span class="material-symbols-outlined text-[16px] text-primary" id="updateStatusIcon">info</span>
+                    <span id="updateStatusTitle">检查更新状态</span>
+                </div>
+                <div id="updateStatusMsg" class="text-[12px] text-outline font-medium whitespace-pre-wrap leading-relaxed break-all"></div>
+                <!-- 进度条 -->
+                <div id="updateProgressBarContainer" class="hidden w-full bg-slate-200/50 dark:bg-white/10 rounded-full h-2 mt-1">
+                    <div id="updateProgressBarFill" class="bg-primary h-2 rounded-full transition-all duration-200" style="width: 0%"></div>
+                </div>
+                <!-- 更新按钮动作组 -->
+                <div id="updateActionsGroup" class="hidden flex gap-2.5 mt-2">
+                    <button id="btnUpdateActionConfirm" class="px-3 py-1.5 bg-primary text-white hover:bg-primary/90 rounded-md text-[12px] font-bold transition-all shadow-sm cursor-pointer"></button>
+                    <button id="btnUpdateActionCancel" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-on-surface dark:text-white rounded-md text-[12px] font-medium transition-all border border-outline-variant/30 cursor-pointer"></button>
+                </div>
+            </div>
+        </div>
     </div>
     <!-- End view-settings -->
     </main>

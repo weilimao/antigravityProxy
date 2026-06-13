@@ -291,6 +291,7 @@ function patchAgentAsarSync(enable) {
 
 let mainWindow;
 let tray;
+let updateManager;
 const engine = new ProxyEngine();
 let isQuitting = false;
 const logBuffer = [];
@@ -537,6 +538,10 @@ app.whenReady().then(async () => {
     // 初始化设置管理器
     settings.init(app.getPath('userData'));
 
+    // 显式更新数据统计模块的路径，纠正 ProxyEngine 实例化时的时序差
+    const statsTracker = require('./src/core/stats');
+    statsTracker.updatePath(settings.getActiveDataDirectory());
+
     // 初始化计费配置的活跃路径
     const pricing = require('./src/core/pricing');
     pricing.init(settings.getActiveDataDirectory());
@@ -613,6 +618,53 @@ app.whenReady().then(async () => {
     const batPatched = updateAgentapiBat(true);
     // 动态原地注入用户本地 app.asar 代理环境变量
     await patchAgentAsar(true);
+
+    // 初始化自动更新管理器
+    const UpdateManager = require('./src/core/updateManager');
+    updateManager = new UpdateManager({
+        logger: {
+            log: (msg) => addLogToBuffer(`[SYSTEM] ${msg}`),
+            error: (msg, err) => addLogToBuffer(`[ERROR] ${msg} ${err ? err : ''}`)
+        },
+        appVersion: app.getVersion(),
+        tempDir: app.getPath('temp'),
+        appQuitCallback: () => {
+            isQuitting = true;
+            app.quit();
+        }
+    });
+
+    // 绑定更新管理器事件，向渲染进程发送通知
+    updateManager.on('update-available', (data) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:update-available', data);
+        }
+    });
+
+    updateManager.on('update-not-available', (data) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:update-not-available', data);
+        }
+    });
+
+    updateManager.on('download-progress', (progress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:download-progress', progress);
+        }
+    });
+
+    updateManager.on('download-complete', (filePath) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:download-complete', filePath);
+        }
+    });
+
+    updateManager.on('error', (err) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:update-error', err.message || err);
+        }
+    });
+
     addLogToBuffer(`✅ Global settings mapped. All IDE/Agent traffic is now routed through us.${batPatched ? ' CLI bat patched.' : ''}`);
     addLogToBuffer('ℹ️ CLI: HTTP_PROXY injected into agentapi.bat for language_server interception.');
     addLogToBuffer('ℹ️ Current Mode: Passthrough (Direct connection, no retries).');
@@ -844,6 +896,36 @@ ipcMain.on('reset-pricing', (event) => {
     event.reply('stats-updated', statsTracker.getPayload());
     addLogToBuffer(`🔄 Model pricing reset to defaults`);
 });
+
+// --- 软件自动更新相关 IPC 渠道 ---
+ipcMain.handle('app:check-for-updates', async (event, manual) => {
+    if (!updateManager) return { error: 'Update manager not initialized' };
+    try {
+        return await updateManager.checkForUpdates(manual);
+    } catch (err) {
+        return { error: err.message || err };
+    }
+});
+
+ipcMain.handle('app:start-download-update', async (event, assets) => {
+    if (!updateManager) return { error: 'Update manager not initialized' };
+    try {
+        return await updateManager.startDownload(assets);
+    } catch (err) {
+        return { error: err.message || err };
+    }
+});
+
+ipcMain.on('app:install-update', (event, filePath) => {
+    if (updateManager) {
+        updateManager.installUpdate(filePath);
+    }
+});
+
+ipcMain.handle('app:get-version', () => {
+    return app.getVersion();
+});
+// ---------------------------------
 
 app.on('before-quit', () => {
     engine.stop();

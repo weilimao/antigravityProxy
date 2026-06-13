@@ -6,6 +6,62 @@ const fs = require('fs');
 const path = require('path');
 const { calculateCost, getPricingForModel } = require('./pricing');
 
+/**
+ * 结构化截断请求 Body 字符串或 JSON 对象，避免大上下文爆内存和磁盘
+ * @param {any} body 
+ * @returns {any}
+ */
+function truncateRequestBody(body) {
+    if (!body) return null;
+    let obj = body;
+    let wasString = false;
+    
+    if (typeof body === 'string') {
+        try {
+            obj = JSON.parse(body);
+            wasString = true;
+        } catch (e) {
+            // 解析失败（非JSON格式字符串），直接做前后段截断
+            if (body.length > 1000) {
+                return body.substring(0, 400) + `\n... [已截断，原字符数: ${body.length}] ...\n` + body.substring(body.length - 200);
+            }
+            return body;
+        }
+    }
+
+    // 递归裁剪大字符串字段
+    function processObject(item) {
+        if (item === null || typeof item !== 'object') {
+            return item;
+        }
+        if (Array.isArray(item)) {
+            return item.map(processObject);
+        }
+        const newObj = {};
+        for (const [key, value] of Object.entries(item)) {
+            if (typeof value === 'string') {
+                if (value.length > 1000) {
+                    newObj[key] = value.substring(0, 400) + `... [已截断，原长度: ${value.length} 字符] ...` + value.substring(value.length - 100);
+                } else {
+                    newObj[key] = value;
+                }
+            } else if (typeof value === 'object') {
+                newObj[key] = processObject(value);
+            } else {
+                newObj[key] = value;
+            }
+        }
+        return newObj;
+    }
+
+    try {
+        const truncatedObj = processObject(obj);
+        return wasString ? JSON.stringify(truncatedObj) : truncatedObj;
+    } catch (e) {
+        return "[解析并截断 JSON 失败]";
+    }
+}
+
 class StatsTracker {
     constructor() {
         this.persistPath = '';
@@ -159,7 +215,7 @@ class StatsTracker {
             statusCode: reqLog.statusCode || 200,
             cost: calculateCost(reqLog.model, reqLog.inTokens, reqLog.outTokens, reqLog.cachedTokens),
             account: reqLog.account || null,
-            requestBody: reqLog.requestBody || null,
+            requestBody: truncateRequestBody(reqLog.requestBody),
             sessionId: reqLog.sessionId || '-'
         };
 
@@ -224,7 +280,18 @@ class StatsTracker {
             const parsed = JSON.parse(fileContent);
             if (parsed.stats) this.stats = parsed.stats;
             if (parsed.trends) this.trends = parsed.trends;
-            if (parsed.requests) this.requests = parsed.requests;
+            if (parsed.requests) {
+                this.requests = parsed.requests.map(req => {
+                    if (req.requestBody) {
+                        req.requestBody = truncateRequestBody(req.requestBody);
+                    }
+                    return req;
+                });
+                // 异步延时保存，把以前的大 requests 体积彻底清洗缩小
+                setTimeout(() => {
+                    this.saveToDisk();
+                }, 1000);
+            }
 
             // 升级 trends 数据以支持 30 天时序筛选
             if (!this.trends || this.trends.length <= 6) {

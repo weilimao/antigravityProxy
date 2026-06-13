@@ -831,6 +831,7 @@ document.addEventListener('DOMContentLoaded', () => {
     switchTab('logs'); // Default to logs tab active
     initChartFilters();
     initPricingEvents();
+    initAppVersion();
 });
 
 // Details Modal Elements
@@ -1890,4 +1891,175 @@ ipcRenderer.on('settings:migration-progress', (event, data) => {
         migrationStatusMsg.className = 'text-[12px] text-outline mt-1 font-medium';
     }
 });
+
+// --- Updater Management UI ---
+const lblCurrentVersion = document.getElementById('lblCurrentVersion');
+const btnCheckUpdate = document.getElementById('btnCheckUpdate');
+const iconCheckUpdate = document.getElementById('iconCheckUpdate');
+const lblBtnCheckUpdate = document.getElementById('lblBtnCheckUpdate');
+const updateStatusContainer = document.getElementById('updateStatusContainer');
+const updateStatusIcon = document.getElementById('updateStatusIcon');
+const updateStatusTitle = document.getElementById('updateStatusTitle');
+const updateStatusMsg = document.getElementById('updateStatusMsg');
+const updateProgressBarContainer = document.getElementById('updateProgressBarContainer');
+const updateProgressBarFill = document.getElementById('updateProgressBarFill');
+const updateActionsGroup = document.getElementById('updateActionsGroup');
+const btnUpdateActionConfirm = document.getElementById('btnUpdateActionConfirm');
+const btnUpdateActionCancel = document.getElementById('btnUpdateActionCancel');
+
+let latestUpdateAssets = null;
+let downloadedInstallerPath = null;
+let updaterState = 'idle'; // idle, checking, update-available, no-update, downloading, downloaded, error
+
+function setUpdaterUIState(state, info = {}) {
+    updaterState = state;
+    const dict = i18n[currentLanguage];
+
+    // Reset visibility defaults
+    updateStatusContainer.classList.remove('hidden');
+    updateProgressBarContainer.classList.add('hidden');
+    updateActionsGroup.classList.add('hidden');
+    
+    btnCheckUpdate.disabled = false;
+    iconCheckUpdate.classList.remove('animate-spin');
+
+    if (state === 'idle') {
+        updateStatusContainer.classList.add('hidden');
+    } else if (state === 'checking') {
+        btnCheckUpdate.disabled = true;
+        iconCheckUpdate.classList.add('animate-spin');
+        
+        updateStatusIcon.textContent = 'sync';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-primary animate-spin';
+        updateStatusTitle.textContent = dict.checkingUpdates || '正在检查更新...';
+        updateStatusMsg.textContent = '';
+    } else if (state === 'update-available') {
+        updateStatusIcon.textContent = 'rocket_launch';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-amber-500';
+        updateStatusTitle.textContent = (dict.updateAvailable || '发现新版本可用！') + ` (${info.latestVersion})`;
+        
+        // Show release notes
+        updateStatusMsg.textContent = info.releaseNotes || 'No release notes.';
+        
+        // Setup Action buttons
+        updateActionsGroup.classList.remove('hidden');
+        btnUpdateActionConfirm.textContent = dict.btnUpdateNow || '立即更新';
+        btnUpdateActionConfirm.className = 'px-3 py-1.5 bg-primary text-white hover:bg-primary/90 rounded-md text-[12px] font-bold transition-all shadow-sm cursor-pointer';
+        
+        btnUpdateActionConfirm.onclick = async () => {
+            if (latestUpdateAssets) {
+                setUpdaterUIState('downloading');
+                try {
+                    await ipcRenderer.invoke('app:start-download-update', latestUpdateAssets);
+                } catch (err) {
+                    setUpdaterUIState('error', { message: err.message || err });
+                }
+            }
+        };
+
+        btnUpdateActionCancel.textContent = dict.btnUpdateLater || '暂不更新';
+        btnUpdateActionCancel.onclick = () => {
+            setUpdaterUIState('idle');
+        };
+    } else if (state === 'no-update') {
+        updateStatusIcon.textContent = 'check_circle';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-emerald-500';
+        updateStatusTitle.textContent = dict.alreadyLatest || '已是最新版本';
+        updateStatusMsg.textContent = '';
+        
+        setTimeout(() => {
+            if (updaterState === 'no-update') {
+                setUpdaterUIState('idle');
+            }
+        }, 3000);
+    } else if (state === 'downloading') {
+        btnCheckUpdate.disabled = true;
+        updateStatusIcon.textContent = 'download';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-primary animate-bounce';
+        updateStatusTitle.textContent = dict.downloadingUpdate || '正在下载更新包...';
+        
+        const percent = info.percent || 0;
+        updateStatusMsg.textContent = `Progress: ${percent}%`;
+        
+        updateProgressBarContainer.classList.remove('hidden');
+        updateProgressBarFill.style.width = `${percent}%`;
+    } else if (state === 'downloaded') {
+        btnCheckUpdate.disabled = true;
+        updateStatusIcon.textContent = 'download_done';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-emerald-500';
+        updateStatusTitle.textContent = dict.downloadComplete || '下载完成，重启后生效';
+        updateStatusMsg.textContent = '';
+        
+        // Setup Restart buttons
+        updateActionsGroup.classList.remove('hidden');
+        btnUpdateActionConfirm.textContent = dict.btnRestartNow || '立即重启';
+        btnUpdateActionConfirm.className = 'px-3 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md text-[12px] font-bold transition-all shadow-sm cursor-pointer';
+        btnUpdateActionConfirm.onclick = () => {
+            if (downloadedInstallerPath) {
+                ipcRenderer.send('app:install-update', downloadedInstallerPath);
+            }
+        };
+
+        btnUpdateActionCancel.textContent = dict.btnLaterRestart || '稍后重启';
+        btnUpdateActionCancel.onclick = () => {
+            setUpdaterUIState('idle');
+        };
+    } else if (state === 'error') {
+        updateStatusIcon.textContent = 'error';
+        updateStatusIcon.className = 'material-symbols-outlined text-[16px] text-rose-500';
+        updateStatusTitle.textContent = dict.updateFailed || '更新失败';
+        updateStatusMsg.textContent = info.message || 'Unknown error occurred.';
+        
+        setTimeout(() => {
+            if (updaterState === 'error') {
+                setUpdaterUIState('idle');
+            }
+        }, 5000);
+    }
+}
+
+// IPC listeners for updater events
+ipcRenderer.on('app:update-available', (event, data) => {
+    latestUpdateAssets = data.assets;
+    downloadedInstallerPath = null;
+    setUpdaterUIState('update-available', data);
+});
+
+ipcRenderer.on('app:update-not-available', (event, data) => {
+    setUpdaterUIState('no-update', data);
+});
+
+ipcRenderer.on('app:download-progress', (event, progress) => {
+    setUpdaterUIState('downloading', progress);
+});
+
+ipcRenderer.on('app:download-complete', (event, filePath) => {
+    downloadedInstallerPath = filePath;
+    setUpdaterUIState('downloaded');
+});
+
+ipcRenderer.on('app:update-error', (event, errMsg) => {
+    setUpdaterUIState('error', { message: errMsg });
+});
+
+btnCheckUpdate.addEventListener('click', async () => {
+    setUpdaterUIState('checking');
+    try {
+        await ipcRenderer.invoke('app:check-for-updates', true);
+    } catch (err) {
+        setUpdaterUIState('error', { message: err.message || err });
+    }
+});
+
+// Load App Version
+async function initAppVersion() {
+    try {
+        const ver = await ipcRenderer.invoke('app:get-version');
+        if (lblCurrentVersion) {
+            lblCurrentVersion.textContent = `v${ver}`;
+        }
+    } catch (err) {
+        console.error('Failed to get app version:', err);
+    }
+}
 

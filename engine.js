@@ -168,12 +168,12 @@ class ProxyEngine extends EventEmitter {
                 }
 
                 // --- CAPTURE ALL TRAFFIC FOR DEBUGGING ---
-                const fs = require('fs');
-                const path = require('path');
-                try {
-                    const captureStr = `[${new Date().toISOString()}] ${req.method} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(req.headers)}\nBody: ${reqBody.toString('utf8')}\n\n`;
-                    fs.appendFileSync(path.join(process.cwd(), 'capture.log'), captureStr);
-                } catch (e) {}
+                if (process.env.DEBUG_PROXY === 'true') {
+                    try {
+                        const captureStr = `[${new Date().toISOString()}] ${req.method} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(req.headers)}\nBody: ${reqBody.toString('utf8')}\n\n`;
+                        fs.appendFileSync(path.join(process.cwd(), 'capture.log'), captureStr);
+                    } catch (e) {}
+                }
                 // -----------------------------------------
 
                 // Fallback direct hosts mapping
@@ -435,17 +435,21 @@ class ProxyEngine extends EventEmitter {
                                 snifferStream = proxyRes.pipe(zlib.createInflate());
                             }
 
-                            let fullBodyStr = '';
+                            const maxWindowSize = 8192; // 8KB 足够容纳 usageMetadata
+                            let tailBuffer = '';
                             snifferStream.on('data', (chunk) => {
-                                fullBodyStr += chunk.toString('utf8');
+                                tailBuffer += chunk.toString('utf8');
+                                if (tailBuffer.length > maxWindowSize) {
+                                    tailBuffer = tailBuffer.substring(tailBuffer.length - maxWindowSize);
+                                }
                             });
 
                             snifferStream.on('end', () => {
                                 if (proxyRes.statusCode === 200 && targetPath.includes('GenerateContent')) {
                                     try {
-                                        const promptMatch = fullBodyStr.match(/"promptTokenCount":\s*(\d+)/g);
-                                        const candidateMatch = fullBodyStr.match(/"candidatesTokenCount":\s*(\d+)/g);
-                                        const cachedMatch = fullBodyStr.match(/"cachedContentTokenCount":\s*(\d+)/g);
+                                        const promptMatch = tailBuffer.match(/"promptTokenCount":\s*(\d+)/g);
+                                        const candidateMatch = tailBuffer.match(/"candidatesTokenCount":\s*(\d+)/g);
+                                        const cachedMatch = tailBuffer.match(/"cachedContentTokenCount":\s*(\d+)/g);
 
                                         if (promptMatch) {
                                             const lastMatch = promptMatch[promptMatch.length - 1];
