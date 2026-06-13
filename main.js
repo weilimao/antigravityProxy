@@ -502,9 +502,17 @@ function createWindow() {
 app.whenReady().then(async () => {
     createWindow();
 
-    // Use a native standard 16x16 icon from the filesystem
-    const iconPath = path.join(__dirname, 'tray-icon.png');
-    tray = new Tray(iconPath);
+    // Ensure tray-icon.png on disk is valid by writing the base64 content
+    try {
+        const base64Data = iconBase64.replace(/^data:image\/png;base64,/, "");
+        fs.writeFileSync(path.join(__dirname, 'tray-icon.png'), Buffer.from(base64Data, 'base64'));
+    } catch (e) {
+        console.error('Failed to write tray-icon.png:', e);
+    }
+
+    // Use a native standard 16x16 icon created from the Base64 Data URL to guarantee it renders correctly
+    const iconImage = nativeImage.createFromDataURL(iconBase64);
+    tray = new Tray(iconImage);
 
     const contextMenu = Menu.buildFromTemplate([
         { label: 'Show Dashboard', click: () => mainWindow.show() },
@@ -530,9 +538,9 @@ app.whenReady().then(async () => {
         }
     });
 
-    engine.on('stats', (stats) => {
+    engine.on('stats', (payload) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('stats', stats);
+            mainWindow.webContents.send('stats-updated', payload);
         }
     });
 
@@ -565,7 +573,10 @@ ipcMain.on('toggle', async (event, enable) => {
 
 ipcMain.on('get-state', (event) => {
     event.reply('state', engine.isInterceptMode);
-    event.reply('stats', engine.stats);
+    
+    const statsTracker = require('./src/core/stats');
+    event.reply('stats-updated', statsTracker.getPayload());
+    
     // Send buffered logs to the new window
     logBuffer.forEach(log => event.reply('log', log));
 
@@ -573,6 +584,10 @@ ipcMain.on('get-state', (event) => {
     checkCertStatus((isInstalled) => {
         event.reply('cert-status-res', isInstalled);
     });
+});
+
+ipcMain.on('get-userdata-path', (event) => {
+    event.returnValue = app.getPath('userData');
 });
 
 ipcMain.on('cert-status', (event) => {
@@ -603,6 +618,41 @@ ipcMain.on('cert-uninstall', (event) => {
         }
         event.reply('cert-status-res', isInstalled, errorMsg);
     });
+});
+
+ipcMain.on('get-pricing', (event) => {
+    const { getAllPricing } = require('./src/core/pricing');
+    event.reply('get-pricing-res', getAllPricing());
+});
+
+ipcMain.on('update-pricing', (event, modelKey, pricingData) => {
+    const { updateModelPricing, getAllPricing } = require('./src/core/pricing');
+    updateModelPricing(modelKey, pricingData);
+    event.reply('get-pricing-res', getAllPricing());
+    
+    const statsTracker = require('./src/core/stats');
+    event.reply('stats-updated', statsTracker.getPayload());
+    addLogToBuffer(`💰 Model pricing updated for "${modelKey}": In: $${pricingData.input}/1M, Out: $${pricingData.output}/1M, Cache: $${pricingData.cached}/1M`);
+});
+
+ipcMain.on('delete-pricing', (event, modelKey) => {
+    const { deleteModelPricing, getAllPricing } = require('./src/core/pricing');
+    deleteModelPricing(modelKey);
+    event.reply('get-pricing-res', getAllPricing());
+    
+    const statsTracker = require('./src/core/stats');
+    event.reply('stats-updated', statsTracker.getPayload());
+    addLogToBuffer(`🗑️ Model pricing deleted for "${modelKey}"`);
+});
+
+ipcMain.on('reset-pricing', (event) => {
+    const { resetPricingToDefault, getAllPricing } = require('./src/core/pricing');
+    resetPricingToDefault();
+    event.reply('get-pricing-res', getAllPricing());
+    
+    const statsTracker = require('./src/core/stats');
+    event.reply('stats-updated', statsTracker.getPayload());
+    addLogToBuffer(`🔄 Model pricing reset to defaults`);
 });
 
 app.on('before-quit', () => {

@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const { app } = require('electron');
 const { Proxy } = require('http-mitm-proxy');
 const { PassThrough } = require('stream');
+const statsTracker = require('./src/core/stats');
 
 class ProxyEngine extends EventEmitter {
     constructor() {
@@ -21,30 +22,13 @@ class ProxyEngine extends EventEmitter {
         this.BASE_DELAY_MS = 1000;
         this.activeTunnels = new Set();
 
-        this.stats = {
-            totalRequests: 0,
-            totalInputTokens: 0,
-            totalOutputTokens: 0,
-            totalCachedTokens: 0,
-            models: {}
-        };
-
-        this.reqLogArray = [];
-        this.resLogArray = [];
+        // Bind tracker to user data directory
+        statsTracker.init(app.getPath('userData'));
+        this.stats = statsTracker.stats; // Expose reference for backward compatibility
     }
 
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    saveLog(type, logStr) {
-        const arr = type === 'req' ? this.reqLogArray : this.resLogArray;
-        const file = type === 'req' ? 'requests.log' : 'responses.log';
-        arr.push(logStr);
-        if (arr.length > 50) arr.shift();
-        
-        const content = arr.join('\n\n==================================================\n\n');
-        fs.writeFile(path.join(app.getPath('userData'), file), content, 'utf8', () => {});
     }
 
     setMode(mode) {
@@ -61,46 +45,9 @@ class ProxyEngine extends EventEmitter {
         }
     }
 
-    updateStats(modelName, inputTokens, outputTokens, cachedTokens) {
-        this.stats.totalRequests++;
-        this.stats.totalInputTokens += inputTokens;
-        this.stats.totalOutputTokens += outputTokens;
-        this.stats.totalCachedTokens += cachedTokens;
-
-        if (!this.stats.models[modelName]) {
-            this.stats.models[modelName] = { reqs: 0, inTokens: 0, outTokens: 0, cachedTokens: 0 };
-        }
-        this.stats.models[modelName].reqs++;
-        this.stats.models[modelName].inTokens += inputTokens;
-        this.stats.models[modelName].outTokens += outputTokens;
-        this.stats.models[modelName].cachedTokens += cachedTokens;
-
-        this.emit('stats', this.stats);
-    }
-
-    installRootCertificate() {
-        if (process.platform === 'win32') {
-            try {
-                const caCertPath = path.join(app.getPath('userData'), 'certs', 'certs', 'ca.pem');
-                if (fs.existsSync(caCertPath)) {
-                    execSync(`certutil -user -addstore -f ROOT "${caCertPath}"`, { stdio: 'ignore' });
-                    this.emit('log', '🔒 Local Root CA successfully trusted in Windows User store.');
-                }
-            } catch (e) {
-                this.emit('log', `❌ Failed to trust local Root CA: ${e.message}`);
-            }
-        }
-    }
-
-    uninstallRootCertificate() {
-        if (process.platform === 'win32') {
-            try {
-                execSync('certutil -user -delstore ROOT NodeMITMProxyCA', { stdio: 'ignore' });
-                this.emit('log', '🔓 Local Root CA removed from Windows User store.');
-            } catch (e) {
-                // Ignore errors on exit
-            }
-        }
+    updateStats(modelName, inTokens, outTokens, cachedTokens) {
+        statsTracker.trackRequest(modelName, inTokens, outTokens, cachedTokens);
+        this.emit('stats', statsTracker.getPayload());
     }
 
     start() {
@@ -108,30 +55,21 @@ class ProxyEngine extends EventEmitter {
 
         this.proxy = new Proxy();
 
-        // 核心：处理 CONNECT 连接以支持动态直通 / 解密切换
+        // Handle CONNECT for dynamic passthrough/decrypt switching
         this.proxy.onConnect((req, socket, head, callback) => {
             const parts = req.url.split(':');
             const host = parts[0];
             const port = parseInt(parts[1]) || 443;
             const tunnelLabel = `[CONNECT ${host}:${port}]`;
 
-            // 识别客户端身份：
-            // Go 语言 backend 发起 CONNECT 时通常带 Go-http-client；
-            // 而 Electron/Chromium 前端（IDE）发起 CONNECT 时可能没有 UA 或带有其他 UA。
             const userAgent = (req.headers['user-agent'] || '').toLowerCase();
             const isGoClient = userAgent.includes('go-http-client');
-
-            // 核心安全优化：我们只拦截和解密特定的 developer API 域名。
-            // 包括 generativelanguage.googleapis.com 和 cloudcode-pa.googleapis.com。
-            // 关键：为了避免 BoringSSL 握手失败（SSL Alert 42）造成的 IDE 初始化死锁与白屏，
-            // 我们仅对 Go Client 的流量进行解密拦截（因为 Go Client 已配置 SSL_CERT_FILE 信任证书）。
             const isTargetHost = host.includes('generativelanguage.googleapis.com') || host.includes('cloudcode-pa.googleapis.com');
 
             const shouldDecrypt = this.isInterceptMode && isTargetHost && isGoClient;
 
             this.emit('log', `🔍 Host: ${host} | Decrypt: ${shouldDecrypt} | UA: ${userAgent || 'none'}`);
 
-            // 如果处于 Passthrough 直通模式，或者不需要解密，完全跳过解密，建立盲 TCP 转发隧道
             if (!shouldDecrypt) {
                 this.emit('log', `🔀 ${tunnelLabel} Tunnel establishing (Passthrough)...`);
 
@@ -167,15 +105,14 @@ class ProxyEngine extends EventEmitter {
                 serverSocket.on('close', cleanup);
                 socket.on('close', cleanup);
 
-                return; // 不调用 callback()，从而阻止 http-mitm-proxy 进行 TLS 握手解密
+                return;
             }
 
-            // 如果处于 Intercept 拦截模式且是目标客户端，调用 callback() 让 http-mitm-proxy 自动签发证书并解密
             this.emit('log', `🕵️ ${tunnelLabel} Decrypting HTTPS traffic...`);
             return callback();
         });
 
-        // 处理解密后的 HTTP / HTTPS 请求
+        // Handle Decrypted HTTP/HTTPS Requests
         this.proxy.onRequest((ctx, callback) => {
             const req = ctx.clientToProxyRequest;
             const res = ctx.proxyToClientResponse;
@@ -184,7 +121,7 @@ class ProxyEngine extends EventEmitter {
                 res.writeContinue();
             }
 
-            req.resume(); // <--- CRITICAL FIX: mitm-proxy pauses the request by default!
+            req.resume(); // Resume client request stream
 
             const reqChunks = [];
             req.on('data', (chunk) => {
@@ -194,7 +131,6 @@ class ProxyEngine extends EventEmitter {
             req.on('end', async () => {
                 const reqBody = Buffer.concat(reqChunks);
 
-                // 动态解析目标 Host 和 Path
                 let targetHost = this.TARGET_HOST;
                 let targetPath = req.url;
 
@@ -208,7 +144,7 @@ class ProxyEngine extends EventEmitter {
                     targetHost = req.headers.host.split(':')[0];
                 }
 
-                // 特殊兜底逻辑：处理直连本地的请求
+                // Fallback direct hosts mapping
                 if (targetHost === '127.0.0.1' || targetHost === 'localhost') {
                     const userAgent = (req.headers['user-agent'] || '').toLowerCase();
                     const isAntigravityAgent = userAgent.includes('antigravity');
@@ -224,21 +160,74 @@ class ProxyEngine extends EventEmitter {
 
                 const logPrefix = `[${req.method} -> ${targetHost}${targetPath}]`;
 
-                // 提取模型名称
                 let currentModel = 'unknown';
                 const modelMatch = targetPath.match(/\/models\/([^:]+)/);
                 if (modelMatch) {
                     currentModel = modelMatch[1];
                 } else if (targetPath.includes('streamGenerateContent')) {
-                    currentModel = 'antigravity-core';
+                    currentModel = 'antigravity-core'; // 默认回退值
+                    if (reqBody && reqBody.length > 0) {
+                        try {
+                            const bodyJson = JSON.parse(reqBody.toString('utf8'));
+                            if (bodyJson.model) {
+                                // 提取类似 "models/gemini-1.5-flash" 或 "gemini-1.5-flash" 中的模型代号
+                                const m = bodyJson.model.match(/(?:models\/)?(.+)/);
+                                if (m) currentModel = m[1];
+                            }
+                        } catch (e) {
+                            // 鲁棒性：若 JSON 解析失败，尝试使用正则提取
+                            const bodyStr = reqBody.toString('utf8');
+                            const m = bodyStr.match(/"model"\s*:\s*"([^"]+)"/);
+                            if (m) {
+                                const internalModel = m[1];
+                                const m2 = internalModel.match(/(?:models\/)?(.+)/);
+                                if (m2) currentModel = m2[1];
+                            }
+                        }
+                    }
                 }
 
-                // 记录完整请求日志
-                const timestampReq = new Date().toISOString();
-                const reqLogStr = `[${timestampReq}] ${req.method} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(req.headers, null, 2)}\n\nPayload:\n${reqBody.toString('utf8')}`;
-                this.saveLog('req', reqLogStr);
+                // Logging details helper
+                let inTokens = 0, outTokens = 0, cachedTokens = 0;
+                let cacheStatus = 'NONE';
+                let logged = false;
 
-                // 打印 Payload
+                const logRequestToTracker = (statusCode) => {
+                    if (logged) return;
+                    logged = true;
+                    
+                    if (statusCode === 200 && targetPath.includes('GenerateContent')) {
+                        cacheStatus = cachedTokens > 0 ? 'HIT' : 'MISS';
+                    } else if (targetPath.includes('GenerateContent')) {
+                        cacheStatus = 'MISS';
+                    }
+
+                    let requestBody = null;
+                    if (reqBody && reqBody.length > 0) {
+                        try {
+                            requestBody = JSON.parse(reqBody.toString('utf8'));
+                        } catch (e) {
+                            requestBody = reqBody.toString('utf8');
+                        }
+                    }
+
+                    statsTracker.addRequestLog({
+                        method: req.method,
+                        host: targetHost,
+                        path: targetPath,
+                        model: currentModel,
+                        inTokens,
+                        outTokens,
+                        cachedTokens,
+                        cacheStatus,
+                        statusCode,
+                        requestBody
+                    });
+
+                    // Emit to update main window stats
+                    this.emit('stats', statsTracker.getPayload());
+                };
+
                 if (reqBody.length > 0) {
                     const safeString = reqBody.toString('utf8').replace(/[^\x20-\x7E一-龥]/g, '');
                     const preview = safeString.length > 150 ? safeString.substring(0, 150) + '...' : safeString;
@@ -262,7 +251,7 @@ class ProxyEngine extends EventEmitter {
                         };
 
                         const proxyReq = https.request(options, (proxyRes) => {
-                            // 1) 503 错误处理
+                            // 503 Capacity Exhausted
                             if (proxyRes.statusCode === 503) {
                                 const resChunks = [];
                                 proxyRes.on('data', chunk => resChunks.push(chunk));
@@ -281,10 +270,6 @@ class ProxyEngine extends EventEmitter {
                                         bodyStr = resBody.toString('utf8');
                                     }
 
-                                    const timestampRes = new Date().toISOString();
-                                    const resLogStr = `[${timestampRes}] ${proxyRes.statusCode} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(proxyRes.headers, null, 2)}\n\nBody:\n${bodyStr}`;
-                                    this.saveLog('res', resLogStr);
-
                                     if (bodyStr.includes('MODEL_CAPACITY_EXHAUSTED')) {
                                         reject(new Error('CAPACITY_EXHAUSTED'));
                                     } else {
@@ -294,7 +279,14 @@ class ProxyEngine extends EventEmitter {
                                 return;
                             }
 
-                            // 2) 统一嗅探所有的 Response 记录响应日志并解析 Token
+                            // Structured logging for non-GenerateContent responses when they end
+                            if (proxyRes.statusCode !== 200 || !targetPath.includes('GenerateContent')) {
+                                proxyRes.on('end', () => {
+                                    logRequestToTracker(proxyRes.statusCode);
+                                });
+                            }
+
+                            // Sniff response body to extract stats
                             const clientStream = new PassThrough();
                             clientStream.statusCode = proxyRes.statusCode;
                             clientStream.headers = proxyRes.headers;
@@ -313,13 +305,8 @@ class ProxyEngine extends EventEmitter {
                             });
 
                             snifferStream.on('end', () => {
-                                const timestampRes = new Date().toISOString();
-                                const resLogStr = `[${timestampRes}] ${proxyRes.statusCode} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(proxyRes.headers, null, 2)}\n\nBody:\n${fullBodyStr}`;
-                                this.saveLog('res', resLogStr);
-
                                 if (proxyRes.statusCode === 200 && targetPath.includes('GenerateContent')) {
                                     try {
-                                        let inTokens = 0, outTokens = 0, cachedTokens = 0;
                                         const promptMatch = fullBodyStr.match(/"promptTokenCount":\s*(\d+)/g);
                                         const candidateMatch = fullBodyStr.match(/"candidatesTokenCount":\s*(\d+)/g);
                                         const cachedMatch = fullBodyStr.match(/"cachedContentTokenCount":\s*(\d+)/g);
@@ -339,10 +326,11 @@ class ProxyEngine extends EventEmitter {
 
                                         if (inTokens > 0 || outTokens > 0) {
                                             this.updateStats(currentModel, inTokens, outTokens, cachedTokens);
-                                            this.emit('log', `📊 [${currentModel}] Usage: ${inTokens} In | ${outTokens} Out | ${cachedTokens} Cached (Hit rate: ${((cachedTokens/(inTokens+cachedTokens||1))*100).toFixed(1)}%)`);
+                                            this.emit('log', `📊 [${currentModel}] Usage: ${inTokens} In | ${outTokens} Out | ${cachedTokens} Cached (Hit rate: ${((cachedTokens/inTokens)*100).toFixed(1)}%)`);
                                         }
                                     } catch (err) {}
                                 }
+                                logRequestToTracker(proxyRes.statusCode);
                             });
 
                             resolve({ isRetryable: false, proxyRes: clientStream });
@@ -376,6 +364,7 @@ class ProxyEngine extends EventEmitter {
                         if (error.message === 'CAPACITY_EXHAUSTED' || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
                             if (attempt === this.MAX_RETRIES) {
                                 this.emit('log', `${logPrefix} ❌ Error: Max retries reached.`);
+                                logRequestToTracker(503);
                                 res.writeHead(503, { 'Content-Type': 'application/json' });
                                 res.end(JSON.stringify({ error: { code: 503, message: "Proxy exhausted max retries", status: "UNAVAILABLE" } }));
                                 return;
@@ -386,6 +375,7 @@ class ProxyEngine extends EventEmitter {
                             await this.sleep(delay);
                         } else {
                             this.emit('log', `${logPrefix} ❌ Unhandled Error: ${error.message}`);
+                            logRequestToTracker(500);
                             res.writeHead(500);
                             res.end("Internal Proxy Error");
                             return;
@@ -399,7 +389,6 @@ class ProxyEngine extends EventEmitter {
             this.emit('log', `⚠️ Proxy Connection Error (${errorKind}): ${err.message}`);
         });
 
-        // 启动 Proxy 并监听端口，CA 证书目录设定在应用数据目录下
         const caDir = path.join(app.getPath('userData'), 'certs');
         this.proxy.listen({
             host: '127.0.0.1',
@@ -412,7 +401,6 @@ class ProxyEngine extends EventEmitter {
             }
             this.isRunning = true;
             this.emit('log', `🚀 Decrypting Proxy Server running on port ${this.LISTEN_PORT}`);
-            this.emit('log', `📁 Payload logs saved to: ${app.getPath('userData')}`);
             
             this.emit('state', this.isInterceptMode);
         });
@@ -425,6 +413,7 @@ class ProxyEngine extends EventEmitter {
             this.proxy = null;
             this.emit('log', `🛑 Proxy Server stopped.`);
             this.emit('state', false);
+            statsTracker.saveToDisk();
         }
     }
 }
