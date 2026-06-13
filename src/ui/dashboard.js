@@ -15,6 +15,7 @@ let searchQuery = '';
 let currentRange = 'today';
 let customStartDate = null;
 let customEndDate = null;
+let quotaCache = {}; // Cache for account quota buckets: { accountId: buckets }
 
 // Pagination
 let currentPage = 1;
@@ -1189,3 +1190,464 @@ function initPricingEvents() {
     // Initial fetch
     fetchPricing();
 }
+
+// --- Account Management UI ---
+
+function switchView(viewName) {
+    const viewDashboard = document.getElementById('view-dashboard');
+    const viewAccounts = document.getElementById('view-accounts');
+    const viewSettings = document.getElementById('view-settings');
+    const navDashboard = document.getElementById('nav-dashboard');
+    const navAccounts = document.getElementById('nav-accounts');
+    const navSettings = document.getElementById('nav-settings');
+
+    if (!viewDashboard || !viewAccounts || !viewSettings || !navDashboard || !navAccounts || !navSettings) {
+        console.warn('[switchView] Warning: DOM navigation or view elements not found:', {
+            viewDashboard: !viewDashboard ? 'MISSING' : 'OK',
+            viewAccounts: !viewAccounts ? 'MISSING' : 'OK',
+            viewSettings: !viewSettings ? 'MISSING' : 'OK',
+            navDashboard: !navDashboard ? 'MISSING' : 'OK',
+            navAccounts: !navAccounts ? 'MISSING' : 'OK',
+            navSettings: !navSettings ? 'MISSING' : 'OK'
+        });
+        return;
+    }
+
+    if (viewName === 'dashboard') {
+        viewDashboard.classList.remove('hidden');
+        viewAccounts.classList.add('hidden');
+        viewSettings.classList.add('hidden');
+        navDashboard.classList.add('border-b-2', 'border-primary');
+        navDashboard.classList.remove('text-outline');
+        navDashboard.classList.add('text-primary', 'dark:text-primary-fixed-dim');
+        
+        navAccounts.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navAccounts.classList.add('text-outline');
+        navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navSettings.classList.add('text-outline');
+    } else if (viewName === 'accounts') {
+        viewDashboard.classList.add('hidden');
+        viewAccounts.classList.remove('hidden');
+        viewAccounts.classList.add('flex');
+        viewSettings.classList.add('hidden');
+        
+        navAccounts.classList.add('border-b-2', 'border-primary');
+        navAccounts.classList.remove('text-outline');
+        navAccounts.classList.add('text-primary', 'dark:text-primary-fixed-dim');
+        
+        navDashboard.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navDashboard.classList.add('text-outline');
+        navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navSettings.classList.add('text-outline');
+    } else if (viewName === 'settings') {
+        viewDashboard.classList.add('hidden');
+        viewAccounts.classList.add('hidden');
+        viewSettings.classList.remove('hidden');
+        viewSettings.classList.add('flex');
+        
+        navSettings.classList.add('border-b-2', 'border-primary');
+        navSettings.classList.remove('text-outline');
+        navSettings.classList.add('text-primary', 'dark:text-primary-fixed-dim');
+        
+        navDashboard.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navDashboard.classList.add('text-outline');
+        navAccounts.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navAccounts.classList.add('text-outline');
+
+        // Fetch directory paths when settings tab is selected
+        refreshDataDir();
+    }
+}
+
+// Ensure globally accessible
+window.switchView = switchView;
+
+const btnAddAccount = document.getElementById('btnAddAccount');
+const addAccountDropdown = document.getElementById('addAccountDropdown');
+const poolModeToggle = document.getElementById('poolModeToggle');
+const accountsList = document.getElementById('accountsList');
+const accountsEmptyState = document.getElementById('accountsEmptyState');
+const accountCountBadge = document.getElementById('accountCountBadge');
+
+let isLoadingAuth = false;
+
+// 切换下拉菜单
+btnAddAccount.addEventListener('click', () => {
+    if (isLoadingAuth) return;
+    addAccountDropdown.classList.toggle('hidden');
+});
+
+// 点击外部关闭下拉菜单
+document.addEventListener('click', (e) => {
+    if (!btnAddAccount.contains(e.target) && !addAccountDropdown.contains(e.target)) {
+        addAccountDropdown.classList.add('hidden');
+    }
+});
+
+// 暴露到全局以便 onclick 调用
+window.startLogin = async function(provider) {
+    if (isLoadingAuth) return;
+    isLoadingAuth = true;
+    addAccountDropdown.classList.add('hidden');
+
+    const origText = btnAddAccount.innerHTML;
+    btnAddAccount.innerHTML = '<span class="material-symbols-outlined text-[16px] animate-spin">refresh</span> 登录中...';
+    btnAddAccount.classList.add('opacity-70', 'cursor-not-allowed');
+
+    try {
+        const res = await ipcRenderer.invoke('auth:login', provider);
+        if (!res.success) {
+            alert('登录失败或已取消: ' + res.error);
+        }
+    } catch (err) {
+        alert('登录出错: ' + err.message);
+    } finally {
+        isLoadingAuth = false;
+        btnAddAccount.innerHTML = origText;
+        btnAddAccount.classList.remove('opacity-70', 'cursor-not-allowed');
+    }
+};
+
+poolModeToggle.addEventListener('change', (e) => {
+    ipcRenderer.send('pool:toggle', e.target.checked);
+});
+
+function getRelativeResetTime(resetTime) {
+    try {
+        const now = Date.now();
+        const reset = new Date(resetTime).getTime();
+        const diffMs = reset - now;
+        if (diffMs <= 0) {
+            return '已重置';
+        }
+        const diffMins = Math.round(diffMs / 60000);
+        if (diffMins < 60) {
+            return `将在 ${diffMins} 分钟后重置`;
+        }
+        const diffHours = Math.floor(diffMins / 60);
+        const remMins = diffMins % 60;
+        if (diffHours < 24) {
+            return `将在 ${diffHours} 小时 ${remMins} 分钟后重置`;
+        }
+        const diffDays = Math.floor(diffHours / 24);
+        const remHours = diffHours % 24;
+        return `将在 ${diffDays} 天 ${remHours} 小时后重置`;
+    } catch (e) {
+        return `重置时间: ${new Date(resetTime).toLocaleString()}`;
+    }
+}
+
+function renderQuotaBars(containerEl, buckets) {
+    containerEl.innerHTML = '';
+    if (!buckets || buckets.length === 0) {
+        containerEl.innerHTML = '<span class="text-[10px] text-outline/50 italic">暂无配额数据</span>';
+        return;
+    }
+
+    // 检查是否包含分组信息
+    const hasGroups = buckets.some(b => b.group);
+
+    if (hasGroups) {
+        // 按组归类
+        const groups = {};
+        buckets.forEach(b => {
+            const groupName = b.group || '其他模型';
+            if (!groups[groupName]) {
+                groups[groupName] = [];
+            }
+            groups[groupName].push(b);
+        });
+
+        // 渲染分组容器
+        Object.keys(groups).forEach((groupName, idx) => {
+            const groupBuckets = groups[groupName];
+            
+            const groupContainer = document.createElement('div');
+            // 如果不是第一个组，增加顶部间距
+            groupContainer.className = `flex flex-col gap-2 bg-[#f8fafc]/60 dark:bg-[#20293d]/30 border border-slate-100 dark:border-slate-800/30 rounded-lg p-2.5 ${idx > 0 ? 'mt-2' : 'mt-1'}`;
+            
+            const groupTitle = document.createElement('div');
+            groupTitle.className = 'text-[10px] font-bold text-on-surface dark:text-white flex items-center gap-1.5 border-b border-outline-variant/10 pb-1.5 mb-1';
+            groupTitle.innerHTML = `
+                <span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+                <span>${groupName}</span>
+            `;
+            groupContainer.appendChild(groupTitle);
+
+            groupBuckets.forEach(b => {
+                const pct = b.remainPercent;
+                const barColor = pct > 50
+                    ? 'bg-emerald-500'
+                    : pct > 20
+                        ? 'bg-amber-400'
+                        : 'bg-red-500';
+
+                const resetStr = b.resetTime
+                    ? getRelativeResetTime(b.resetTime)
+                    : null;
+
+                const row = document.createElement('div');
+                row.className = 'flex flex-col gap-0.5 mt-1';
+                row.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="text-[10px] text-outline dark:text-outline-variant truncate max-w-[70%]" title="${b.modelId}">${b.modelId}</span>
+                        <span class="text-[10px] font-bold text-on-surface dark:text-white">${pct}%</span>
+                    </div>
+                    <div class="h-1.5 bg-outline-variant/20 dark:bg-white/10 rounded-full overflow-hidden">
+                        <div class="h-full ${barColor} rounded-full transition-all duration-700"
+                             style="width: ${pct}%"></div>
+                    </div>
+                    ${resetStr ? `<span class="text-[9px] text-outline/50 mt-0.5">${resetStr}</span>` : ''}
+                `;
+                groupContainer.appendChild(row);
+            });
+
+            containerEl.appendChild(groupContainer);
+        });
+    } else {
+        // 兼容原有的平铺渲染方式
+        buckets.forEach(b => {
+            const pct = b.remainPercent;
+            const barColor = pct > 50
+                ? 'bg-emerald-500'
+                : pct > 20
+                    ? 'bg-amber-400'
+                    : 'bg-red-500';
+
+            const resetStr = b.resetTime
+                ? new Date(b.resetTime).toLocaleString()
+                : null;
+
+            const row = document.createElement('div');
+            row.className = 'flex flex-col gap-0.5';
+            row.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <span class="text-[10px] text-outline dark:text-outline-variant truncate max-w-[70%]" title="${b.modelId}">${b.modelId}</span>
+                    <span class="text-[10px] font-bold text-on-surface dark:text-white">${pct}%</span>
+                </div>
+                <div class="h-1.5 bg-outline-variant/20 dark:bg-white/10 rounded-full overflow-hidden">
+                    <div class="h-full ${barColor} rounded-full transition-all duration-700"
+                         style="width: ${pct}%"></div>
+                </div>
+                ${resetStr ? `<span class="text-[9px] text-outline/50 mt-0.5">重置于: ${resetStr}</span>` : ''}
+            `;
+            containerEl.appendChild(row);
+        });
+    }
+}
+
+async function loadAccountQuota(accountId, containerEl, refreshBtn, force = false) {
+    if (!force && quotaCache[accountId]) {
+        renderQuotaBars(containerEl, quotaCache[accountId]);
+        return;
+    }
+    refreshBtn.classList.add('animate-spin');
+    containerEl.innerHTML = '<span class="text-[10px] text-outline/50">加载中...</span>';
+    try {
+        const result = await ipcRenderer.invoke('quota:fetch', accountId);
+        if (result.error) {
+            containerEl.innerHTML = `<span class="text-[10px] text-red-400">${result.error}</span>`;
+        } else {
+            quotaCache[accountId] = result.buckets;
+            renderQuotaBars(containerEl, result.buckets);
+        }
+    } catch (e) {
+        containerEl.innerHTML = `<span class="text-[10px] text-red-400">请求失败</span>`;
+    } finally {
+        refreshBtn.classList.remove('animate-spin');
+    }
+}
+
+function renderAccounts(accounts) {
+    accountCountBadge.textContent = `共 ${accounts.length} 个账号`;
+    accountsList.innerHTML = '';
+    
+    if (accounts.length === 0) {
+        accountsEmptyState.classList.remove('hidden');
+        accountsEmptyState.classList.add('flex');
+        accountsList.classList.add('hidden');
+        return;
+    }
+    
+    accountsEmptyState.classList.add('hidden');
+    accountsEmptyState.classList.remove('flex');
+    accountsList.classList.remove('hidden');
+    
+    accounts.forEach(acc => {
+        const card = document.createElement('div');
+        card.className = 'bg-white dark:bg-[#1a1f30] border border-outline-variant/30 rounded-xl p-4 flex flex-col gap-3 shadow-sm relative overflow-hidden';
+        
+        // Background decorative icon
+        const bgIcon = document.createElement('div');
+        bgIcon.className = 'absolute -right-4 -bottom-4 text-primary opacity-[0.03] pointer-events-none';
+        bgIcon.innerHTML = '<span class="material-symbols-outlined" style="font-size: 80px;">account_circle</span>';
+        card.appendChild(bgIcon);
+        
+        // ---- Header ----
+        const header = document.createElement('div');
+        header.className = 'flex justify-between items-start';
+
+        const info = document.createElement('div');
+        info.className = 'flex flex-col flex-1 min-w-0 mr-2';
+
+        // 增加提供商 Badge
+        const providerBadge = acc.provider === 'antigravity'
+            ? '<span class="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[9px] font-bold border border-primary/20 ml-2 mt-0.5 self-center">Antigravity</span>'
+            : (acc.provider === 'gemini-cli'
+                ? '<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300 text-[9px] font-bold border border-outline-variant/30 ml-2 mt-0.5 self-center">Gemini CLI</span>'
+                : '');
+
+        info.innerHTML = `
+            <div class="flex items-center">
+                <span class="text-[13px] font-bold text-on-surface dark:text-white truncate" title="${acc.email}">${acc.email}</span>
+                ${providerBadge}
+            </div>
+            <span class="text-[11px] text-outline mt-0.5 truncate">添加于: ${new Date(acc.addedAt).toLocaleString()}</span>
+        `;
+        
+        const statusBadge = document.createElement('div');
+        statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
+        statusBadge.innerHTML = '<span class="material-symbols-outlined text-[12px]">check_circle</span> 有效';
+        
+        header.appendChild(info);
+        header.appendChild(statusBadge);
+        
+        // ---- Quota Section ----
+        const quotaSection = document.createElement('div');
+        quotaSection.className = 'flex flex-col gap-2 border-t border-outline-variant/20 pt-3';
+
+        const quotaHeader = document.createElement('div');
+        quotaHeader.className = 'flex justify-between items-center';
+        quotaHeader.innerHTML = '<span class="text-[11px] font-semibold text-outline dark:text-outline-variant">剩余配额</span>';
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.className = 'text-outline hover:text-primary transition-colors z-10';
+        refreshBtn.title = '刷新配额';
+        refreshBtn.innerHTML = '<span class="material-symbols-outlined text-[14px]">refresh</span>';
+
+        quotaHeader.appendChild(refreshBtn);
+        quotaSection.appendChild(quotaHeader);
+
+        const quotaBars = document.createElement('div');
+        quotaBars.className = 'flex flex-col gap-2';
+        quotaSection.appendChild(quotaBars);
+
+        // Bind refresh button
+        refreshBtn.onclick = () => loadAccountQuota(acc.id, quotaBars, refreshBtn, true);
+
+        // ---- Footer ----
+        const footer = document.createElement('div');
+        footer.className = 'flex justify-end pt-1 border-t border-outline-variant/20';
+        
+        const btnDelete = document.createElement('button');
+        btnDelete.className = 'text-[11px] font-medium text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-1 rounded transition-colors flex items-center gap-1 z-10';
+        btnDelete.innerHTML = '<span class="material-symbols-outlined text-[14px]">delete</span> 移除';
+        btnDelete.onclick = () => {
+            if (confirm(`确定要移除账号 ${acc.email} 吗？`)) {
+                ipcRenderer.send('accounts:remove', acc.id);
+            }
+        };
+        
+        footer.appendChild(btnDelete);
+        
+        card.appendChild(header);
+        card.appendChild(quotaSection);
+        card.appendChild(footer);
+        accountsList.appendChild(card);
+
+        // Auto-load quota on render
+        loadAccountQuota(acc.id, quotaBars, refreshBtn, false);
+    });
+}
+
+ipcRenderer.on('accounts-res', (event, data) => {
+    if (data.accounts) {
+        renderAccounts(data.accounts);
+    }
+    if (typeof data.poolMode !== 'undefined') {
+        poolModeToggle.checked = data.poolMode;
+    }
+});
+
+// Fetch initial accounts
+ipcRenderer.send('accounts:get');
+
+// --- Settings Management UI ---
+const txtDataDir = document.getElementById('txtDataDir');
+const btnBrowseDir = document.getElementById('btnBrowseDir');
+const migrationStatus = document.getElementById('migrationStatus');
+const migrationStatusMsg = document.getElementById('migrationStatusMsg');
+
+function refreshDataDir() {
+    try {
+        const res = ipcRenderer.sendSync('settings:get-dir-sync');
+        if (res && res.activeDir) {
+            txtDataDir.value = res.activeDir;
+        }
+    } catch (err) {
+        console.error('Failed to get data directory:', err);
+    }
+}
+
+// Ensure globally accessible
+window.refreshDataDir = refreshDataDir;
+
+btnBrowseDir.addEventListener('click', async () => {
+    migrationStatus.classList.add('hidden');
+    migrationStatusMsg.innerText = '';
+    
+    btnBrowseDir.disabled = true;
+    
+    try {
+        const result = await ipcRenderer.invoke('settings:change-dir');
+        if (result.success) {
+            if (result.activeDir) {
+                txtDataDir.value = result.activeDir;
+            }
+        } else if (result.error && result.error !== '用户取消选择') {
+            showMigrationError(result.error);
+        }
+    } catch (err) {
+        showMigrationError(err.message);
+    } finally {
+        btnBrowseDir.disabled = false;
+    }
+});
+
+function showMigrationError(errText) {
+    migrationStatus.classList.remove('hidden');
+    migrationStatus.className = 'text-[12px] p-3 rounded-lg border bg-rose-50 dark:bg-rose-950/30 border-rose-100 dark:border-rose-900/30 flex flex-col gap-1';
+    
+    const isZH = typeof currentLang !== 'undefined' ? currentLang === 'zh' : true;
+    const prefix = isZH ? '❌ 迁移失败：' : '❌ Migration failed: ';
+    migrationStatusMsg.innerText = prefix + errText;
+    migrationStatusMsg.className = 'text-[12px] text-rose-600 dark:text-rose-400 mt-1 font-medium';
+}
+
+ipcRenderer.on('settings:migration-progress', (event, data) => {
+    migrationStatus.classList.remove('hidden');
+    const isZH = typeof currentLang !== 'undefined' ? currentLang === 'zh' : true;
+
+    if (data.step === 'error') {
+        showMigrationError(data.status);
+    } else if (data.step === 'success') {
+        migrationStatus.className = 'text-[12px] p-3 rounded-lg border bg-emerald-50 dark:bg-emerald-950/30 border-emerald-100 dark:border-emerald-900/30 flex flex-col gap-1';
+        migrationStatusMsg.innerText = isZH ? '🎉 数据迁移成功！已重定向至新存储路径。' : '🎉 Migration completed successfully! Redirected to the new path.';
+        migrationStatusMsg.className = 'text-[12px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium';
+    } else {
+        migrationStatus.className = 'text-[12px] p-3 rounded-lg border bg-slate-50 dark:bg-white/5 border-outline-variant/30 flex flex-col gap-1';
+        
+        let statusText = data.status;
+        if (!isZH) {
+            if (data.step === 'stop-proxy') statusText = 'Stopping proxy server...';
+            else if (data.step === 'migrate-files') statusText = 'Migrating data files and certificates (Do not close)...';
+            else if (data.step === 'update-paths') statusText = 'Redirecting internal path services...';
+            else if (data.step === 'patch-externals') statusText = 'Updating external settings and certificate patches...';
+            else if (data.step === 'restart-proxy') statusText = 'Restarting proxy server...';
+        }
+        
+        migrationStatusMsg.innerText = statusText;
+        migrationStatusMsg.className = 'text-[12px] text-outline mt-1 font-medium';
+    }
+});
+

@@ -32,6 +32,20 @@ class StatsTracker {
     }
 
     /**
+     * Updates the persistence path dynamically and reloads data
+     * @param {string} newPath New data root path
+     */
+    updatePath(newPath) {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveToDisk();
+            this.saveTimeout = null;
+        }
+        this.persistPath = path.join(newPath, 'stats.json');
+        this.loadFromDisk();
+    }
+
+    /**
      * Records an API request's token metrics and cost
      * @param {string} modelName 
      * @param {number} inTokens Total prompt tokens (including cached)

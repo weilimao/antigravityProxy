@@ -21,10 +21,22 @@ const DEFAULT_PRICING = {
 
 let currentPricing = { ...DEFAULT_PRICING };
 let pricingFilePath = null;
+let customUserDataPath = null;
+
+function init(userDataPath) {
+    customUserDataPath = userDataPath;
+    pricingFilePath = null;
+    initialized = false;
+}
+
+function updatePath(newPath) {
+    init(newPath);
+}
 
 function getPricingFilePath() {
     if (!pricingFilePath) {
-        pricingFilePath = path.join(app.getPath('userData'), 'pricing.json');
+        const rootDir = customUserDataPath || app.getPath('userData');
+        pricingFilePath = path.join(rootDir, 'pricing.json');
     }
     return pricingFilePath;
 }
@@ -196,6 +208,8 @@ function resetPricingToDefault() {
 }
 
 module.exports = {
+    init,
+    updatePath,
     calculateCost,
     getPricingForModel,
     getAllPricing,

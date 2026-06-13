@@ -6,3 +6,6 @@ dist/
 test-extract/
 asar_extracted/
 certs/
+
+# Local OAuth credentials - never commit this file
+credentials.json

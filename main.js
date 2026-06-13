@@ -76,7 +76,12 @@ function hotPatchMitmProxy() {
 }
 hotPatchMitmProxy();
 
+const settings = require('./src/core/settings');
 const ProxyEngine = require('./engine');
+const accountManager = require('./src/core/accountManager');
+const geminiCliAuth = require('./src/core/geminiCliAuth');
+const antigravityAuth = require('./src/core/antigravityAuth');
+const quotaService = require('./src/core/quotaService');
 
 // Helper to kill Agent process
 function killAgentProcess(sync = false) {
@@ -204,9 +209,20 @@ async function patchAgentAsar(enable) {
         try {
             const os = require('os');
             const path = require('path');
-            const caPath = process.platform === 'win32'
-                ? path.join(os.homedir(), 'AppData', 'Roaming', 'antigravity-proxy-desktop', 'certs', 'certs', 'ca.pem')
-                : path.join(os.homedir(), 'Library', 'Application Support', 'antigravity-proxy-desktop', 'certs', 'certs', 'ca.pem');
+            const fs = require('fs');
+            const defaultUserData = process.platform === 'win32'
+                ? path.join(os.homedir(), 'AppData', 'Roaming', 'antigravity-proxy-desktop')
+                : path.join(os.homedir(), 'Library', 'Application Support', 'antigravity-proxy-desktop');
+            let caPath = path.join(defaultUserData, 'certs', 'certs', 'ca.pem');
+            try {
+                const configPath = path.join(defaultUserData, 'config.json');
+                if (fs.existsSync(configPath)) {
+                    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                    if (config.dataDirectory) {
+                        caPath = path.join(config.dataDirectory, 'certs', 'certs', 'ca.pem');
+                    }
+                }
+            } catch (err) {}
             env['SSL_CERT_FILE'] = caPath;
         } catch (e) {}`;
                     
@@ -307,7 +323,7 @@ function checkCertStatus(callback) {
 }
 
 function installCert(callback) {
-    const caCertPath = path.join(app.getPath('userData'), 'certs', 'certs', 'ca.pem');
+    const caCertPath = path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem');
     if (!fs.existsSync(caCertPath)) {
         callback(false, 'Certificate file ca.pem not found. Please start proxy first.');
         return;
@@ -402,9 +418,7 @@ function updateAgentapiBat(enable) {
     const appData = app.getPath('appData');
     const homeDir = app.getPath('home');
     
-    const caPath = process.platform === 'win32'
-        ? path.join(app.getPath('userData'), 'certs', 'certs', 'ca.pem')
-        : path.join(homeDir, 'Library', 'Application Support', 'antigravity-proxy-desktop', 'certs', 'certs', 'ca.pem');
+    const caPath = path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem');
 
     // bat 文件的可能路径（兼容 Windows AppData 和 macOS ~/Library/Application Support）
     const batCandidates = [
@@ -490,6 +504,7 @@ function createWindow() {
     });
 
     mainWindow.loadFile('index.html');
+    mainWindow.webContents.openDevTools();
 
     mainWindow.on('close', (event) => {
         if (!isQuitting) {
@@ -500,6 +515,13 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+    // 初始化设置管理器
+    settings.init(app.getPath('userData'));
+
+    // 初始化计费配置的活跃路径
+    const pricing = require('./src/core/pricing');
+    pricing.init(settings.getActiveDataDirectory());
+
     createWindow();
 
     // Ensure tray-icon.png on disk is valid by writing the base64 content
@@ -546,6 +568,19 @@ app.whenReady().then(async () => {
 
     addLogToBuffer('🖥️ Antigravity Proxy UI Started');
 
+    // 初始化账号管理器
+    accountManager.init(settings.getActiveDataDirectory());
+
+    // 监听账号管理器更新，通知 UI
+    accountManager.on('accounts-updated', (accounts) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('accounts-res', {
+                accounts,
+                poolMode: accountManager.getPoolMode()
+            });
+        }
+    });
+
     // 核心改造：启动代理服务，但默认设为直通模式
     engine.start();
     engine.setMode(false);
@@ -560,6 +595,55 @@ app.whenReady().then(async () => {
     addLogToBuffer('ℹ️ CLI: HTTP_PROXY injected into agentapi.bat for language_server interception.');
     addLogToBuffer('ℹ️ Current Mode: Passthrough (Direct connection, no retries).');
 });
+
+// --- 账号池相关 IPC ---
+ipcMain.handle('auth:login', async (event, provider) => {
+    try {
+        let res;
+        if (provider === 'antigravity') {
+            res = await antigravityAuth.startLogin();
+        } else {
+            res = await geminiCliAuth.startLogin();
+        }
+        return res;
+    } catch (err) {
+        addLogToBuffer(`❌ Login failed (${provider}): ${err.message}`);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.on('accounts:get', (event) => {
+    event.reply('accounts-res', {
+        accounts: accountManager.getAccounts(),
+        poolMode: accountManager.getPoolMode()
+    });
+});
+
+ipcMain.on('accounts:remove', (event, id) => {
+    accountManager.removeAccount(id);
+});
+
+ipcMain.on('pool:toggle', (event, enable) => {
+    accountManager.setPoolMode(enable);
+    if (enable) {
+        addLogToBuffer(`🔄 Account Pool Mode enabled. Distributing requests across ${accountManager.getAccounts().length} accounts.`);
+    } else {
+        addLogToBuffer('🔄 Account Pool Mode disabled. Using client-provided credentials.');
+    }
+});
+
+// 按账号 ID 查询配额
+ipcMain.handle('quota:fetch', async (event, accountId) => {
+    const account = accountManager.accounts.find(a => a.id === accountId);
+    if (!account) return { error: 'Account not found', buckets: [] };
+    try {
+        // 传入完整 account（含 refresh_token）以便 quotaService 自动刷新过期 token
+        return await quotaService.fetchQuota(account, accountManager);
+    } catch (err) {
+        return { error: err.message, buckets: [] };
+    }
+});
+// ----------------------
 
 ipcMain.on('toggle', async (event, enable) => {
     // 热切换：只需调用 Engine 的 setMode 即可瞬间生效
@@ -588,6 +672,75 @@ ipcMain.on('get-state', (event) => {
 
 ipcMain.on('get-userdata-path', (event) => {
     event.returnValue = app.getPath('userData');
+});
+
+ipcMain.on('settings:get-dir-sync', (event) => {
+    event.returnValue = {
+        activeDir: settings.getActiveDataDirectory(),
+        defaultDir: app.getPath('userData')
+    };
+});
+
+ipcMain.handle('settings:change-dir', async (event) => {
+    const window = BrowserWindow.getFocusedWindow();
+    const result = dialog.showOpenDialogSync(window, {
+        title: '选择数据存储目录',
+        properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (!result || result.length === 0) {
+        return { success: false, error: '用户取消选择' };
+    }
+
+    const targetDir = result[0];
+    
+    // 如果选择的目录就是当前活动的目录，直接返回成功
+    if (path.resolve(targetDir) === path.resolve(settings.getActiveDataDirectory())) {
+        return { success: true, activeDir: targetDir };
+    }
+
+    try {
+        event.sender.send('settings:migration-progress', { step: 'stop-proxy', status: '正在停止代理服务器...' });
+        engine.stop();
+
+        event.sender.send('settings:migration-progress', { step: 'migrate-files', status: '正在复制数据文件与证书 (请勿关闭软件)...' });
+        const migrateResult = await settings.migrateData(targetDir);
+        
+        if (!migrateResult.success) {
+            event.sender.send('settings:migration-progress', { step: 'error', status: migrateResult.error });
+            engine.start(); // 恢复启动
+            return migrateResult;
+        }
+
+        event.sender.send('settings:migration-progress', { step: 'update-paths', status: '正在重定向数据服务工作路径...' });
+        // 重新加载数据
+        accountManager.updatePath(targetDir);
+        
+        const statsTracker = require('./src/core/stats');
+        statsTracker.updatePath(targetDir);
+        
+        const pricing = require('./src/core/pricing');
+        pricing.updatePath(targetDir);
+
+        event.sender.send('settings:migration-progress', { step: 'patch-externals', status: '正在更新外部编辑器代理补丁...' });
+        // 更新 IDE 及 CLI 设置的证书路径
+        await updateSettings(true);
+        updateAgentapiBat(true);
+        await patchAgentAsar(true);
+
+        event.sender.send('settings:migration-progress', { step: 'restart-proxy', status: '正在重新启动代理服务器...' });
+        engine.start();
+
+        event.sender.send('settings:migration-progress', { step: 'success', status: '🎉 迁移成功！数据已妥善转移并重定向。' });
+        addLogToBuffer(`📁 数据存储路径已成功更改并迁移至: ${targetDir}`);
+        
+        return { success: true, activeDir: targetDir };
+    } catch (err) {
+        console.error('[ChangeDir] Migration failed:', err);
+        // 恢复
+        try { engine.start(); } catch (_) {}
+        return { success: false, error: err.message };
+    }
 });
 
 ipcMain.on('cert-status', (event) => {

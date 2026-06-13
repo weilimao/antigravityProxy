@@ -138,18 +138,18 @@
         </div>
 
         <!-- 顶部导航链接 (仅视觉占位) -->
-        <nav class="hidden md:flex items-center gap-8">
-            <a class="text-primary dark:text-primary-fixed-dim border-b-2 border-primary pb-0.5 flex flex-col items-center" href="#">
+        <nav class="flex items-center gap-8">
+            <a id="nav-dashboard" class="text-primary dark:text-primary-fixed-dim border-b-2 border-primary pb-0.5 flex flex-col items-center" href="#" onclick="switchView('dashboard')">
                 <span class="nav-link-en text-[10px] font-bold tracking-wider">DASHBOARD</span>
                 <span class="nav-link-zh text-[13px] font-medium" data-i18n="title">控制面板</span>
             </a>
-            <a class="text-outline hover:text-primary transition-colors pb-0.5 flex flex-col items-center" href="#">
-                <span class="nav-link-en text-[10px] font-bold tracking-wider">PROXIES</span>
-                <span class="nav-link-zh text-[13px] font-medium">代理</span>
+            <a id="nav-accounts" class="text-outline hover:text-primary transition-colors pb-0.5 flex flex-col items-center" href="#" onclick="switchView('accounts')">
+                <span class="nav-link-en text-[10px] font-bold tracking-wider">ACCOUNTS</span>
+                <span class="nav-link-zh text-[13px] font-medium">账号池</span>
             </a>
-            <a class="text-outline hover:text-primary transition-colors pb-0.5 flex flex-col items-center" href="#">
+            <a id="nav-settings" class="text-outline hover:text-primary transition-colors pb-0.5 flex flex-col items-center" href="#" onclick="switchView('settings')">
                 <span class="nav-link-en text-[10px] font-bold tracking-wider">SETTINGS</span>
-                <span class="nav-link-zh text-[13px] font-medium">设置</span>
+                <span class="nav-link-zh text-[13px] font-medium" data-i18n="navSettings">设置</span>
             </a>
         </nav>
 
@@ -179,6 +179,8 @@
 
     <!-- 主内容区 -->
     <main class="flex-grow px-container-padding py-6 w-full flex flex-col gap-6 overflow-y-auto">
+        <!-- 面板视图 -->
+        <div id="view-dashboard" class="flex flex-col gap-6 w-full">
         <!-- 页面标题 -->
         <div class="flex justify-between items-end">
             <div>
@@ -397,7 +399,6 @@
                         <span id="tooltipCost" class="font-data-mono font-semibold text-rose-500">0</span>
                     </div>
                 </div>
-            </div>
             <!-- 图例说明 -->
             <div class="flex justify-center flex-wrap gap-x-5 gap-y-2 mt-3 text-[11px] text-outline select-none">
                 <div class="flex items-center gap-1.5">
@@ -521,6 +522,110 @@
                 </div>
             </div>
         </div>
+    </div> <!-- End view-dashboard -->
+
+    <!-- 账号池视图 -->
+    <div id="view-accounts" class="hidden flex-col gap-6 w-full">
+        <div class="flex justify-between items-end">
+            <div>
+                <h1 class="text-2xl font-bold text-on-surface dark:text-white">账号池管理</h1>
+                <p class="text-xs text-outline dark:text-outline-variant">统一管理多个 Google OAuth 账号，开启池模式可自动进行请求负载均衡</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2 bg-slate-50/50 dark:bg-white/5 px-3 py-1.5 rounded-lg border border-outline-variant/30">
+                    <span class="text-[13px] font-medium text-on-surface dark:text-white">账号池模式</span>
+                    <div class="relative inline-block w-10 mr-1 align-middle select-none transition duration-200 ease-in">
+                        <input class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out" id="poolModeToggle" type="checkbox"/>
+                        <label class="toggle-label block overflow-hidden h-5 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer" for="poolModeToggle"></label>
+                    </div>
+                </div>
+                <div class="relative">
+                    <button id="btnAddAccount" class="flex items-center gap-1.5 px-4 py-1.5 bg-primary text-white hover:bg-primary/90 rounded-md text-[13px] font-bold transition-colors shadow-sm">
+                        <span class="material-symbols-outlined text-[16px]">add_circle</span>
+                        添加账号
+                        <span class="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+                    </button>
+                    <!-- 下拉菜单 -->
+                    <div id="addAccountDropdown" class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#1a1f30] border border-outline-variant/30 rounded-xl shadow-xl py-2 hidden z-50">
+                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors flex items-center gap-2" onclick="startLogin('antigravity')">
+                            <span class="material-symbols-outlined text-primary text-[16px]">extension</span>
+                            <div>
+                                <div class="font-bold">Antigravity (推荐)</div>
+                                <div class="text-[10px] text-outline">使用官方插件凭证授权</div>
+                            </div>
+                        </button>
+                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors flex items-center gap-2 border-t border-outline-variant/10 mt-1 pt-3" onclick="startLogin('gemini-cli')">
+                            <span class="material-symbols-outlined text-outline text-[16px]">terminal</span>
+                            <div>
+                                <div class="font-bold">Gemini CLI</div>
+                                <div class="text-[10px] text-outline">使用终端 CLI 凭证授权</div>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 账号列表卡片 -->
+        <div class="glass-card rounded-xl flex flex-col flex-1 min-h-[300px]">
+            <div class="p-4 border-b border-outline-variant/30 flex justify-between items-center bg-slate-50/50 dark:bg-white/5 rounded-t-xl">
+                <span class="text-[13px] font-bold text-outline dark:text-outline-variant">已添加的账号</span>
+                <span class="text-[12px] font-medium text-primary dark:text-primary-fixed-dim bg-primary/10 px-2 py-0.5 rounded-md" id="accountCountBadge">共 0 个账号</span>
+            </div>
+            <div class="flex-grow overflow-y-auto p-4">
+                <div id="accountsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- 动态生成的账号卡片 -->
+                </div>
+                <div id="accountsEmptyState" class="hidden flex-col items-center justify-center py-12 text-outline/50">
+                    <span class="material-symbols-outlined text-[48px] mb-2">account_circle_off</span>
+                    <span class="text-[13px]">暂无账号，点击右上角添加</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- End view-accounts -->
+
+    <!-- 系统设置视图 -->
+    <div id="view-settings" class="hidden flex-col gap-6 w-full">
+        <div class="flex justify-between items-end">
+            <div>
+                <h1 class="text-2xl font-bold text-on-surface dark:text-white" data-i18n="settingsTitle">系统设置</h1>
+                <p class="text-xs text-outline dark:text-outline-variant" data-i18n="settingsDesc">配置代理软件的底层行为与本地数据存储路径</p>
+            </div>
+        </div>
+
+        <!-- 数据存储路径卡片 -->
+        <div class="glass-card rounded-xl p-6 flex flex-col gap-4">
+            <h2 class="text-[15px] font-bold text-on-surface dark:text-white flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary text-[20px]">folder_open</span>
+                <span data-i18n="dataDirLabel">数据存储位置</span>
+            </h2>
+            <p class="text-xs text-outline leading-relaxed" data-i18n="dataDirTip">
+                所有核心数据（账号凭证、流量统计数据、计费配置、以及局域网 CA 证书）均保存在此目录中。更改此路径后，系统会自动将您之前存储的数据完整迁移至新位置。
+            </p>
+            
+            <div class="flex flex-col gap-2 mt-2">
+                <label class="text-[12px] font-bold text-outline" data-i18n="currentDirLabel">当前存储路径</label>
+                <div class="flex gap-2">
+                    <input id="txtDataDir" type="text" readonly class="flex-grow px-3 py-2 text-[12px] bg-slate-50 dark:bg-white/5 border border-outline-variant/60 rounded-md focus:outline-none text-on-surface dark:text-white" />
+                    <button id="btnBrowseDir" class="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-md text-[13px] font-bold transition-colors shadow-sm flex items-center gap-1.5 cursor-pointer">
+                        <span class="material-symbols-outlined text-[16px]">folder</span>
+                        <span data-i18n="btnChangeDir">更改位置</span>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 状态提示 -->
+            <div id="migrationStatus" class="hidden text-[12px] p-3 rounded-lg border flex flex-col gap-1">
+                <div class="font-bold flex items-center gap-1.5 text-on-surface dark:text-white">
+                    <span class="material-symbols-outlined text-[16px] text-primary">info</span>
+                    <span data-i18n="migrationStatusTitle">数据迁移状态</span>
+                </div>
+                <div id="migrationStatusMsg" class="text-[12px] text-outline mt-1 font-medium"></div>
+            </div>
+        </div>
+    </div>
+    <!-- End view-settings -->
     </main>
 
     <!-- 页脚版权与链接 -->

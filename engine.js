@@ -23,7 +23,8 @@ class ProxyEngine extends EventEmitter {
         this.activeTunnels = new Set();
 
         // Bind tracker to user data directory
-        statsTracker.init(app.getPath('userData'));
+        const settings = require('./src/core/settings');
+        statsTracker.init(settings.getActiveDataDirectory());
         this.stats = statsTracker.stats; // Expose reference for backward compatibility
     }
 
@@ -63,7 +64,7 @@ class ProxyEngine extends EventEmitter {
             const tunnelLabel = `[CONNECT ${host}:${port}]`;
 
             const userAgent = (req.headers['user-agent'] || '').toLowerCase();
-            const isGoClient = userAgent.includes('go-http-client');
+            const isGoClient = userAgent.includes('go-http-client') || userAgent.includes('antigravity') || userAgent.includes('cloudcode');
             const isTargetHost = host.includes('generativelanguage.googleapis.com') || host.includes('cloudcode-pa.googleapis.com');
 
             const shouldDecrypt = this.isInterceptMode && isTargetHost && isGoClient;
@@ -131,6 +132,27 @@ class ProxyEngine extends EventEmitter {
             req.on('end', async () => {
                 const reqBody = Buffer.concat(reqChunks);
 
+                // Capture active project from request body
+                if (reqBody && reqBody.length > 0) {
+                    try {
+                        const bodyJson = JSON.parse(reqBody.toString('utf8'));
+                        if (bodyJson.project) {
+                            const quotaService = require('./src/core/quotaService');
+                            let email = 'default';
+                            const authHeader = req.headers['authorization'] || '';
+                            if (authHeader.startsWith('Bearer ')) {
+                                const token = authHeader.substring(7);
+                                const accountManager = require('./src/core/accountManager');
+                                const account = accountManager.accounts.find(a => a.access_token === token);
+                                if (account && account.email) {
+                                    email = account.email;
+                                }
+                            }
+                            quotaService.setCapturedProject(email, bodyJson.project);
+                        }
+                    } catch (e) {}
+                }
+
                 let targetHost = this.TARGET_HOST;
                 let targetPath = req.url;
 
@@ -143,6 +165,15 @@ class ProxyEngine extends EventEmitter {
                 } else if (req.headers.host) {
                     targetHost = req.headers.host.split(':')[0];
                 }
+
+                // --- CAPTURE ALL TRAFFIC FOR DEBUGGING ---
+                const fs = require('fs');
+                const path = require('path');
+                try {
+                    const captureStr = `[${new Date().toISOString()}] ${req.method} ${targetHost}${targetPath}\nHeaders: ${JSON.stringify(req.headers)}\nBody: ${reqBody.toString('utf8')}\n\n`;
+                    fs.appendFileSync(path.join(process.cwd(), 'capture.log'), captureStr);
+                } catch (e) {}
+                // -----------------------------------------
 
                 // Fallback direct hosts mapping
                 if (targetHost === '127.0.0.1' || targetHost === 'localhost') {
@@ -231,22 +262,50 @@ class ProxyEngine extends EventEmitter {
                 if (reqBody.length > 0) {
                     const safeString = reqBody.toString('utf8').replace(/[^\x20-\x7E一-龥]/g, '');
                     const preview = safeString.length > 150 ? safeString.substring(0, 150) + '...' : safeString;
-                    this.emit('log', `${logPrefix} Payload: ${preview}`);
+                    this.emit('log', `${logPrefix} Headers: ${JSON.stringify(req.headers)} | Payload: ${preview}`);
                 } else {
-                    this.emit('log', `${logPrefix}`);
+                    this.emit('log', `${logPrefix} Headers: ${JSON.stringify(req.headers)}`);
                 }
 
                 const attemptRequest = (attemptIndex) => {
                     return new Promise((resolve, reject) => {
+                        // --- 账号池 token 注入 ---
+                        const accountManager = require('./src/core/accountManager');
+                        const customHeaders = { ...req.headers, host: targetHost };
+                        const poolToken = accountManager.getNextToken();
+                        let finalReqBody = reqBody;
+
+                        if (poolToken) {
+                            customHeaders['authorization'] = `Bearer ${poolToken}`;
+                            if (attemptIndex === 1) {
+                                const acc = accountManager.accounts[accountManager.currentIndex === 0 ? accountManager.accounts.length - 1 : accountManager.currentIndex - 1];
+                                this.emit('log', `🔀 [Pool Mode] Request injected with pool token (Account: ${acc?.email} | ${acc?.provider})`);
+                            }
+                        }
+                        
+                        // Strip 'project' ID from payload to prevent 429 Quota Exhaustion on IDE's default project
+                        if (reqBody.length > 0 && customHeaders['content-type'] && customHeaders['content-type'].includes('json')) {
+                            try {
+                                const bodyJson = JSON.parse(reqBody.toString('utf8'));
+                                if (bodyJson.project) {
+                                    delete bodyJson.project;
+                                    const newBodyStr = JSON.stringify(bodyJson);
+                                    finalReqBody = Buffer.from(newBodyStr, 'utf8');
+                                    customHeaders['content-length'] = finalReqBody.length;
+                                    if (attemptIndex === 1) {
+                                        this.emit('log', `🛡️ Stripped 'project' ID from payload to avoid IDE default project quota 429.`);
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                        // -------------------------
+
                         const options = {
                             hostname: targetHost,
                             port: 443,
                             path: targetPath,
                             method: req.method,
-                            headers: {
-                                ...req.headers,
-                                host: targetHost,
-                            },
+                            headers: customHeaders,
                             rejectUnauthorized: false
                         };
 
@@ -275,6 +334,35 @@ class ProxyEngine extends EventEmitter {
                                     } else {
                                         resolve({ isRetryable: false, proxyRes, bodyBuffer: resBody });
                                     }
+                                });
+                                return;
+                            }
+
+                            // Intercept 429 for Quota API to prevent IDE infinite loop
+                            if (proxyRes.statusCode === 429 && targetPath.includes('retrieveUserQuota')) {
+                                this.emit('log', `⚠️ Intercepted 429 from Google Quota API. Mocking 200 OK to prevent IDE infinite loop.`);
+                                const mockQuotaResponse = {
+                                    quotaSummaries: [
+                                        { model: 'Gemini Weekly Quota', usedFraction: 1.0 },
+                                        { model: 'Gemini 5-Hour Quota', usedFraction: 1.0 },
+                                        { model: 'Claude Weekly Quota', usedFraction: 1.0 },
+                                        { model: 'Claude 5-Hour Quota', usedFraction: 1.0 }
+                                    ]
+                                };
+                                const mockBuffer = Buffer.from(JSON.stringify(mockQuotaResponse), 'utf8');
+                                
+                                proxyRes.on('data', () => {}); // Drain stream
+                                proxyRes.on('end', () => {
+                                    logRequestToTracker(429);
+                                });
+                                
+                                resolve({ 
+                                    isRetryable: false, 
+                                    proxyRes: { 
+                                        statusCode: 200, 
+                                        headers: { 'content-type': 'application/json', 'content-length': mockBuffer.length } 
+                                    }, 
+                                    bodyBuffer: mockBuffer 
                                 });
                                 return;
                             }
@@ -338,8 +426,8 @@ class ProxyEngine extends EventEmitter {
 
                         proxyReq.on('error', (e) => reject(e));
 
-                        if (reqBody.length > 0) {
-                            proxyReq.write(reqBody);
+                        if (finalReqBody.length > 0) {
+                            proxyReq.write(finalReqBody);
                         }
                         proxyReq.end();
                     });
@@ -389,7 +477,8 @@ class ProxyEngine extends EventEmitter {
             this.emit('log', `⚠️ Proxy Connection Error (${errorKind}): ${err.message}`);
         });
 
-        const caDir = path.join(app.getPath('userData'), 'certs');
+        const settings = require('./src/core/settings');
+        const caDir = path.join(settings.getActiveDataDirectory(), 'certs');
         this.proxy.listen({
             host: '127.0.0.1',
             port: this.LISTEN_PORT,

@@ -54,7 +54,19 @@ const translations = {
         noData: "暂无请求数据",
         noLogs: "暂无日志记录",
         
-        logBufferTitle: "控制台系统日志"
+        logBufferTitle: "控制台系统日志",
+        
+        navSettings: "设置",
+        settingsTitle: "系统设置",
+        settingsDesc: "配置代理软件的底层行为与本地数据存储路径",
+        dataDirLabel: "数据存储位置",
+        dataDirTip: "所有核心数据（账号凭证、流量统计数据、计费配置、以及局域网 CA 证书）均保存在此目录中。更改此路径后，系统会自动将您之前存储的数据完整迁移至新位置。",
+        currentDirLabel: "当前存储路径",
+        btnChangeDir: "更改位置",
+        migrationStatusTitle: "数据迁移状态",
+        migrationStatusSuccess: "🎉 数据迁移成功！已重定向至新存储路径。",
+        migrationStatusFailed: "❌ 迁移失败：",
+        migrationStatusProcessing: "⏳ 正在迁移数据，请稍候...",
     },
     en: {
         title: "Antigravity Proxy Console",
@@ -107,7 +119,19 @@ const translations = {
         noData: "No data available",
         noLogs: "No logs recorded",
         
-        logBufferTitle: "Console System Log"
+        logBufferTitle: "Console System Log",
+        
+        navSettings: "Settings",
+        settingsTitle: "System Settings",
+        settingsDesc: "Configure underlying behaviors and local data storage path.",
+        dataDirLabel: "Data Directory",
+        dataDirTip: "All core data (credentials, request logs, model pricing, and local CA certificates) are saved in this directory. When updated, existing data will be automatically migrated to the new location.",
+        currentDirLabel: "Current Path",
+        btnChangeDir: "Change Location",
+        migrationStatusTitle: "Data Migration Status",
+        migrationStatusSuccess: "🎉 Migration completed successfully! Redirected to the new path.",
+        migrationStatusFailed: "❌ Migration failed: ",
+        migrationStatusProcessing: "⏳ Migrating data, please wait...",
     }
 };
 
