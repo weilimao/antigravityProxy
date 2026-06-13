@@ -67,7 +67,9 @@ class AccountManager extends EventEmitter {
             access_token: accountInfo.access_token,
             refresh_token: accountInfo.refresh_token || null,
             provider: accountInfo.provider || 'unknown',
-            addedAt: new Date().toISOString()
+            addedAt: new Date().toISOString(),
+            tier: accountInfo.tier || 'Standard',
+            enabled: typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true
         });
 
         this.saveAccounts();
@@ -89,7 +91,9 @@ class AccountManager extends EventEmitter {
             provider: a.provider || 'gemini-cli',
             addedAt: a.addedAt,
             cooldowns: a.cooldowns || {},
-            cooldownUntil: a.cooldownUntil || null
+            cooldownUntil: a.cooldownUntil || null,
+            tier: a.tier || 'Standard',
+            enabled: a.enabled !== false
         }));
     }
 
@@ -104,6 +108,37 @@ class AccountManager extends EventEmitter {
         if (acc) {
             acc.access_token = newToken;
             this.saveAccounts(true);
+        }
+    }
+
+    /** 更新账号的启用/停用状态 */
+    updateAccountEnabled(id, enabled) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (acc && acc.enabled !== enabled) {
+            acc.enabled = enabled;
+            this.saveAccounts(true);
+            this.emit('accounts-updated', this.accounts);
+            
+            // 如果被禁用，通知粘性路由器作废该账号的所有会话映射
+            if (!enabled) {
+                try {
+                    const sessionRouter = require('./sessionRouter');
+                    const invalidated = sessionRouter.invalidateByAccountId(id);
+                    if (invalidated > 0 && global.addLogToBuffer) {
+                        global.addLogToBuffer(`🔄 [粘性路由] 账号 ${acc.email} 已停用，已重置 ${invalidated} 个关联会话`);
+                    }
+                } catch (e) {}
+            }
+        }
+    }
+
+    /** 更新账号的订阅级别/标签 */
+    updateAccountTier(id, tier) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (acc && acc.tier !== tier) {
+            acc.tier = tier;
+            this.saveAccounts(true);
+            this.emit('accounts-updated', this.accounts);
         }
     }
 
@@ -129,12 +164,18 @@ class AccountManager extends EventEmitter {
             return null;
         }
 
+        const activeAccounts = this.accounts.filter(a => a.enabled !== false);
+        if (activeAccounts.length === 0) {
+            return null;
+        }
+
         const category = this.getModelCategory(modelName);
         const now = Date.now();
         let attempts = 0;
-        while (attempts < this.accounts.length) {
-            const account = this.accounts[this.currentIndex];
-            this.currentIndex = (this.currentIndex + 1) % this.accounts.length;
+        while (attempts < activeAccounts.length) {
+            this.currentIndex = this.currentIndex % activeAccounts.length;
+            const account = activeAccounts[this.currentIndex];
+            this.currentIndex = (this.currentIndex + 1) % activeAccounts.length;
 
             const cooldownUntil = account.cooldowns
                 ? (account.cooldowns[category] || null)
@@ -202,6 +243,7 @@ class AccountManager extends EventEmitter {
         const now = Date.now();
         const category = this.getModelCategory(modelName);
         return this.accounts.filter(a => {
+            if (a.enabled === false) return false;
             const cooldownUntil = a.cooldowns
                 ? (a.cooldowns[category] || null)
                 : a.cooldownUntil;
@@ -349,6 +391,9 @@ class AccountManager extends EventEmitter {
                         
                         if (res && res.buckets) {
                             this.updateAccountCooldownFromQuota(acc.id, res.buckets);
+                        }
+                        if (res && res.tier) {
+                            this.updateAccountTier(acc.id, res.tier);
                         } else {
                             acc.cooldownUntil = now + 5 * 60 * 1000;
                             if (acc.cooldowns) {

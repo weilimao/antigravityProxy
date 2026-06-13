@@ -7,15 +7,18 @@ const i18n = require('./src/shared/i18n');
 
 // State Variables
 let currentLanguage = 'zh';
-let currentTheme = 'dark';
+let currentTheme = 'light';
 let activeTab = 'logs'; // Default to logs in Design 4
 let trendsData = [];
 let allRequests = [];
 let searchQuery = '';
-let currentRange = 'today';
+let currentRange = '24h';
 let customStartDate = null;
 let customEndDate = null;
 let quotaCache = {}; // Cache for account quota buckets: { accountId: buckets }
+let currentAccountsList = []; // Track currently loaded accounts for aggregation
+let memoryHistory = [];
+const maxMemoryHistoryPoints = 25;
 
 // Pagination
 let currentPage = 1;
@@ -106,6 +109,60 @@ function getBezierPath(points) {
     return d;
 }
 
+// Render Memory Usage Chart
+function updateMemoryChart() {
+    const svg = document.getElementById('memorySvg');
+    const path = document.getElementById('memoryChartPath');
+    const area = document.getElementById('memoryChartArea');
+    const dot = document.getElementById('memoryChartDot');
+    if (!svg || !path || !area || memoryHistory.length === 0) return;
+
+    const width = 200;
+    const height = 45;
+    const padding = 4; // Padding to keep line and dot within bounds
+
+    const N = memoryHistory.length;
+    let minVal = Math.min(...memoryHistory);
+    let maxVal = Math.max(...memoryHistory);
+
+    // Dynamic scaling logic
+    if (maxVal - minVal < 5.0) {
+        const center = (maxVal + minVal) / 2;
+        minVal = Math.max(0, center - 2.5);
+        maxVal = center + 2.5;
+    } else {
+        const diff = maxVal - minVal;
+        minVal = Math.max(0, minVal - diff * 0.1);
+        maxVal = maxVal + diff * 0.1;
+    }
+
+    const points = memoryHistory.map((val, idx) => {
+        const x = N > 1 ? (idx / (N - 1)) * width : width / 2;
+        const y = height - padding - ((val - minVal) / (maxVal - minVal)) * (height - 2 * padding);
+        return { x, y };
+    });
+
+    let d = '';
+    if (points.length === 1) {
+        d = `M 0,${points[0].y} L ${width},${points[0].y}`;
+    } else {
+        d = getBezierPath(points);
+    }
+
+    path.setAttribute('d', d);
+
+    if (points.length > 0) {
+        const areaD = `${d} L ${points[points.length - 1].x},${height} L ${points[0].x},${height} Z`;
+        area.setAttribute('d', areaD);
+    }
+
+    if (dot && points.length > 0) {
+        const lastPoint = points[points.length - 1];
+        dot.setAttribute('cx', lastPoint.x.toFixed(1));
+        dot.setAttribute('cy', lastPoint.y.toFixed(1));
+    }
+}
+
 // Draw SVG Line Chart
 // Draw SVG Line Chart
 // Draw SVG Line Chart
@@ -178,6 +235,7 @@ function drawTrendChartSVG(trends, range = '7d') {
         const dict = i18n[currentLanguage] || {};
         let labelKey = 'summaryTotalCostCustom';
         if (range === 'today') labelKey = 'summaryTotalCostToday';
+        else if (range === '24h') labelKey = 'summaryTotalCost24h';
         else if (range === '3d') labelKey = 'summaryTotalCost3d';
         else if (range === '7d') labelKey = 'summaryTotalCost7d';
         else if (range === '30d') labelKey = 'summaryTotalCost30d';
@@ -272,12 +330,25 @@ function drawTrendChartSVG(trends, range = '7d') {
 
     indices.forEach(idx => {
         const d = trends[idx];
-        const percent = (idx / (N - 1)) * 100;
+        const percent = N > 1 ? (idx / (N - 1)) * 100 : 50;
         const label = document.createElement('div');
         label.className = 'absolute -translate-x-1/2 text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap font-sans';
         label.style.left = `${percent}%`;
         
-        if (isSingleDay) {
+        if (range === '24h') {
+            if (idx === 0) {
+                label.textContent = d.time || '';
+            } else {
+                const prevD = trends[idx - 1];
+                const currentDay = d.time ? d.time.split(' ')[0] : '';
+                const prevDay = prevD && prevD.time ? prevD.time.split(' ')[0] : '';
+                if (currentDay && prevDay && currentDay !== prevDay) {
+                    label.textContent = d.time || '';
+                } else {
+                    label.textContent = d.time ? (d.time.split(' ')[1] || d.time) : '';
+                }
+            }
+        } else if (isSingleDay) {
             label.textContent = d.time ? (d.time.split(' ')[1] || d.time) : '';
         } else {
             label.textContent = d.time ? d.time.split(' ')[0] : '';
@@ -425,6 +496,8 @@ function setLanguage(lang) {
 
     updateStatusLabel();
     ipcRenderer.send('get-state');
+    // 同步语言到主进程托盘右键菜单
+    ipcRenderer.send('settings:language-changed', lang);
 }
 
 function updateStatusLabel() {
@@ -715,14 +788,30 @@ ipcRenderer.on('state', (event, isInterceptMode) => {
 
 ipcRenderer.on('memory-stats-updated', (event, data) => {
     if (!data) return;
+    let totalMBVal = 0;
     const valMemory = document.getElementById('valMemory');
     if (valMemory && typeof data.total === 'number') {
-        const totalMB = (data.total / (1024 * 1024)).toFixed(1);
-        valMemory.textContent = `${totalMB} MB`;
+        totalMBVal = parseFloat((data.total / (1024 * 1024)).toFixed(1));
+        valMemory.textContent = `${totalMBVal.toFixed(1)} MB`;
     }
     const valProcessCount = document.getElementById('valProcessCount');
     if (valProcessCount && typeof data.processCount === 'number') {
         valProcessCount.textContent = data.processCount;
+    }
+
+    // 更新内存历史并绘制图表
+    if (typeof data.total === 'number') {
+        if (memoryHistory.length === 0) {
+            for (let i = 0; i < maxMemoryHistoryPoints; i++) {
+                memoryHistory.push(totalMBVal);
+            }
+        } else {
+            memoryHistory.push(totalMBVal);
+            if (memoryHistory.length > maxMemoryHistoryPoints) {
+                memoryHistory.shift();
+            }
+        }
+        updateMemoryChart();
     }
 });
 
@@ -826,7 +915,7 @@ ipcRenderer.on('cert-status-res', (event, isInstalled) => {
 
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
-    setTheme('dark'); // Default to dark mode (Design 4 is dark/light switchable)
+    setTheme('light'); // Default to light mode (Design 4 is dark/light switchable)
     setLanguage('zh'); // Default to Chinese
     switchTab('logs'); // Default to logs tab active
     initChartFilters();
@@ -991,6 +1080,8 @@ function getFilteredTrends(trends, range) {
     let slots = [];
     if (range === 'today') {
         slots = generateTodaySlots();
+    } else if (range === '24h') {
+        slots = generateHourlySlots(24);
     } else if (range === '3d') {
         slots = generateHourlySlots(72);
     } else if (range === '7d') {
@@ -1320,6 +1411,8 @@ function switchView(viewName) {
         navAccounts.classList.add('text-outline');
         navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
         navSettings.classList.add('text-outline');
+        
+        updateAggregateQuotaUI();
     } else if (viewName === 'accounts') {
         viewDashboard.classList.add('hidden');
         viewAccounts.classList.remove('hidden');
@@ -1366,6 +1459,7 @@ const accountCountBadge = document.getElementById('accountCountBadge');
 const btnRefreshAllQuota = document.getElementById('btnRefreshAllQuota');
 const btnRefreshAllIcon = document.getElementById('btnRefreshAllIcon');
 const btnClearSessions = document.getElementById('btnClearSessions');
+const btnRefreshAggregateQuota = document.getElementById('btnRefreshAggregateQuota');
 
 let isRefreshingAll = false;
 
@@ -1408,6 +1502,9 @@ async function refreshAllQuotas() {
 }
 
 btnRefreshAllQuota.addEventListener('click', refreshAllQuotas);
+if (btnRefreshAggregateQuota) {
+    btnRefreshAggregateQuota.addEventListener('click', refreshAllAccountsQuotas);
+}
 
 // 清空会话绑定按钮
 if (btnClearSessions) {
@@ -1492,6 +1589,7 @@ function updatePoolModeUI() {
 poolModeToggle.addEventListener('change', (e) => {
     ipcRenderer.send('pool:toggle', e.target.checked);
     updatePoolModeUI();
+    updateAggregateQuotaUI();
 });
 
 function getRelativeResetTime(resetTime) {
@@ -1646,6 +1744,7 @@ function renderQuotaBars(containerEl, buckets, cooldowns = {}) {
 async function loadAccountQuota(accountId, containerEl, refreshBtn, force = false, cooldowns = {}) {
     if (!force && quotaCache[accountId]) {
         renderQuotaBars(containerEl, quotaCache[accountId], cooldowns);
+        updateAggregateQuotaUI();
         return;
     }
     refreshBtn.classList.add('animate-spin');
@@ -1657,6 +1756,7 @@ async function loadAccountQuota(accountId, containerEl, refreshBtn, force = fals
         } else {
             quotaCache[accountId] = result.buckets;
             renderQuotaBars(containerEl, result.buckets, cooldowns);
+            updateAggregateQuotaUI();
         }
     } catch (e) {
         containerEl.innerHTML = `<span class="text-[10px] text-red-400">请求失败</span>`;
@@ -1666,6 +1766,7 @@ async function loadAccountQuota(accountId, containerEl, refreshBtn, force = fals
 }
 
 function renderAccounts(accounts) {
+    currentAccountsList = accounts;
     accountCountBadge.textContent = `共 ${accounts.length} 个账号`;
     accountsList.innerHTML = '';
     
@@ -1704,10 +1805,30 @@ function renderAccounts(accounts) {
                 ? '<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300 text-[9px] font-bold border border-outline-variant/30 ml-2 mt-0.5 self-center">Gemini CLI</span>'
                 : '');
 
+        // 增加订阅级别 Tier Badge
+        let tierBadge = '';
+        if (acc.tier) {
+            const tierStr = acc.tier.toUpperCase();
+            if (tierStr === 'PRO') {
+                tierBadge = '<span class="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 dark:text-rose-400 text-[9px] font-bold border border-rose-500/20 ml-2 mt-0.5 self-center">Pro</span>';
+            } else if (tierStr === 'ULTRA') {
+                tierBadge = '<span class="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 text-[9px] font-bold border border-purple-500/20 ml-2 mt-0.5 self-center font-extrabold tracking-wide">Ultra</span>';
+            } else if (tierStr === 'ENTERPRISE') {
+                tierBadge = '<span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[9px] font-bold border border-blue-500/20 ml-2 mt-0.5 self-center">Enterprise</span>';
+            } else if (tierStr === 'STANDARD') {
+                tierBadge = '<span class="px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[9px] font-bold border border-sky-500/20 ml-2 mt-0.5 self-center">Standard</span>';
+            } else if (tierStr === 'FREE') {
+                tierBadge = '<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300 text-[9px] font-bold border border-outline-variant/30 ml-2 mt-0.5 self-center">Free</span>';
+            } else {
+                tierBadge = `<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300 text-[9px] font-bold border border-outline-variant/30 ml-2 mt-0.5 self-center">${acc.tier}</span>`;
+            }
+        }
+
         info.innerHTML = `
             <div class="flex items-center">
                 <span class="text-[13px] font-bold text-on-surface dark:text-white truncate" title="${acc.email}">${acc.email}</span>
                 ${providerBadge}
+                ${tierBadge}
             </div>
             <span class="text-[11px] text-outline mt-0.5 truncate">添加于: ${new Date(acc.addedAt).toLocaleString()}</span>
         `;
@@ -1777,7 +1898,51 @@ function renderAccounts(accounts) {
 
         // ---- Footer ----
         const footer = document.createElement('div');
-        footer.className = 'flex justify-end pt-1 border-t border-outline-variant/20';
+        footer.className = 'flex justify-between items-center pt-1 border-t border-outline-variant/20';
+        
+        // 账号级启用/禁用 Toggle
+        const toggleWrapper = document.createElement('div');
+        toggleWrapper.className = 'flex items-center gap-1.5 select-none cursor-pointer';
+        
+        const switchId = `accToggle-${acc.id}`;
+        const isChecked = acc.enabled !== false;
+        toggleWrapper.innerHTML = `
+            <div class="relative inline-block w-8 mr-1 align-middle select-none transition duration-200 ease-in">
+                <input class="toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out" 
+                    id="${switchId}" type="checkbox" ${isChecked ? 'checked' : ''}/>
+                <label class="toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer" for="${switchId}"></label>
+            </div>
+            <span class="text-[11px] font-bold ${isChecked ? 'text-emerald-500' : 'text-outline'}">${isChecked ? '启用中' : '已停用'}</span>
+        `;
+        
+        const checkbox = toggleWrapper.querySelector('input');
+        const labelText = toggleWrapper.querySelector('span');
+        
+        checkbox.addEventListener('change', (e) => {
+            const enabled = e.target.checked;
+            ipcRenderer.send('accounts:toggle-enabled', acc.id, enabled);
+            acc.enabled = enabled; // Update local state directly for immediate aggregation update
+            if (enabled) {
+                checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+                labelText.className = 'text-[11px] font-bold text-emerald-500';
+                labelText.textContent = '启用中';
+                card.classList.remove('opacity-60');
+            } else {
+                checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+                labelText.className = 'text-[11px] font-bold text-outline';
+                labelText.textContent = '已停用';
+                card.classList.add('opacity-60');
+            }
+            updateAggregateQuotaUI();
+        });
+        
+        // Initial state styling
+        if (!isChecked) {
+            card.classList.add('opacity-60');
+            checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+        } else {
+            checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+        }
         
         const btnDelete = document.createElement('button');
         btnDelete.className = 'text-[11px] font-medium text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-1 rounded transition-colors flex items-center gap-1 z-10';
@@ -1788,6 +1953,7 @@ function renderAccounts(accounts) {
             }
         };
         
+        footer.appendChild(toggleWrapper);
         footer.appendChild(btnDelete);
         
         card.appendChild(header);
@@ -1802,12 +1968,14 @@ function renderAccounts(accounts) {
 
 ipcRenderer.on('accounts-res', (event, data) => {
     if (data.accounts) {
+        currentAccountsList = data.accounts;
         renderAccounts(data.accounts);
     }
     if (typeof data.poolMode !== 'undefined') {
         poolModeToggle.checked = data.poolMode;
         updatePoolModeUI();
     }
+    updateAggregateQuotaUI();
 });
 
 // Fetch initial accounts
@@ -2060,6 +2228,154 @@ async function initAppVersion() {
         }
     } catch (err) {
         console.error('Failed to get app version:', err);
+    }
+}
+
+function updateAggregateQuotaUI() {
+    const panel = document.getElementById('aggregate-quota-panel');
+    const grid = document.getElementById('aggregate-quota-grid');
+    const info = document.getElementById('aggregate-quota-info');
+    if (!panel || !grid || !info) return;
+
+    const isPool = poolModeToggle.checked;
+    if (!isPool || !currentAccountsList || currentAccountsList.length === 0) {
+        panel.classList.add('hidden');
+        panel.classList.remove('flex');
+        return;
+    }
+
+    panel.classList.remove('hidden');
+    panel.classList.add('flex');
+
+    const categories = [
+        { group: 'Gemini Models', modelId: 'Weekly Limit', label: 'Gemini Weekly', key: 'gemini_weekly' },
+        { group: 'Gemini Models', modelId: 'Five Hour Limit', label: 'Gemini 5-Hour', key: 'gemini_5hour' },
+        { group: 'Claude and GPT models', modelId: 'Weekly Limit', label: 'Claude Weekly', key: 'claude_weekly' },
+        { group: 'Claude and GPT models', modelId: 'Five Hour Limit', label: 'Claude 5-Hour', key: 'claude_5hour' }
+    ];
+
+    const sums = {
+        gemini_weekly: { sum: 0, count: 0 },
+        gemini_5hour: { sum: 0, count: 0 },
+        claude_weekly: { sum: 0, count: 0 },
+        claude_5hour: { sum: 0, count: 0 }
+    };
+
+    const enabledAccounts = currentAccountsList.filter(a => a.enabled !== false);
+
+    currentAccountsList.forEach(acc => {
+        // Only sum up if enabled
+        if (acc.enabled === false) return;
+        const buckets = quotaCache[acc.id];
+        if (buckets && buckets.length > 0) {
+            categories.forEach(cat => {
+                const bucket = buckets.find(b => {
+                    const bg = (b.group || '').toLowerCase();
+                    const bm = (b.modelId || b.model || '').toLowerCase();
+                    const cg = cat.group.toLowerCase();
+                    const cm = cat.modelId.toLowerCase();
+                    return (bg.includes(cg) || cg.includes(bg)) && (bm.includes(cm) || cm.includes(bm));
+                });
+                
+                if (bucket) {
+                    const percent = typeof bucket.remainPercent === 'number' ? bucket.remainPercent : (bucket.remainingFraction * 100);
+                    sums[cat.key].sum += percent;
+                    sums[cat.key].count += 1;
+                }
+            });
+        }
+    });
+
+    grid.innerHTML = '';
+    let totalAccountsWithQuota = 0;
+    const enabledAccountIds = new Set(enabledAccounts.map(a => a.id));
+    
+    Object.keys(quotaCache).forEach(accId => {
+        if (enabledAccountIds.has(accId)) {
+            totalAccountsWithQuota++;
+        }
+    });
+    
+    info.textContent = `汇总 ${totalAccountsWithQuota}/${enabledAccounts.length} 个账号的额度`;
+
+    categories.forEach(cat => {
+        const data = sums[cat.key];
+        const cell = document.createElement('div');
+        cell.className = 'flex flex-col gap-1 bg-slate-50/50 dark:bg-white/5 p-2 rounded-lg border border-outline-variant/20 flex-1 min-w-0';
+
+        if (data.count > 0) {
+            const avgPercent = Math.round(data.sum / data.count);
+            
+            let colorClass = 'bg-emerald-500';
+            let textClass = 'text-emerald-500 dark:text-emerald-400';
+            if (avgPercent < 30) {
+                colorClass = 'bg-red-500';
+                textClass = 'text-red-500 dark:text-red-400';
+            } else if (avgPercent < 60) {
+                colorClass = 'bg-amber-500';
+                textClass = 'text-amber-500 dark:text-amber-400';
+            }
+
+            cell.innerHTML = `
+                <div class="flex justify-between text-[11px] font-semibold items-center">
+                    <span class="text-on-surface dark:text-white truncate pr-1" title="${cat.group} - ${cat.modelId}">${cat.label}</span>
+                    <span class="${textClass} font-bold">${avgPercent}%</span>
+                </div>
+                <div class="w-full h-1 bg-outline-variant/20 dark:bg-white/5 rounded-full overflow-hidden">
+                    <div class="${colorClass} h-full transition-all duration-300" style="width: ${avgPercent}%;"></div>
+                </div>
+            `;
+        } else {
+            cell.innerHTML = `
+                <div class="flex justify-between text-[11px] font-semibold items-center">
+                    <span class="text-on-surface dark:text-white truncate" title="${cat.group} - ${cat.modelId}">${cat.label}</span>
+                    <span class="text-outline/40 font-bold">-</span>
+                </div>
+                <div class="w-full h-1 bg-outline-variant/20 dark:bg-white/5 rounded-full overflow-hidden flex items-center justify-center">
+                    <div class="bg-outline-variant/30 h-full w-0"></div>
+                </div>
+            `;
+        }
+        grid.appendChild(cell);
+    });
+}
+
+let isRefreshingAggregate = false;
+async function refreshAllAccountsQuotas() {
+    if (isRefreshingAggregate || !currentAccountsList || currentAccountsList.length === 0) return;
+    isRefreshingAggregate = true;
+
+    const btn = document.getElementById('btnRefreshAggregateQuota');
+    const icon = document.getElementById('btnRefreshAggregateIcon');
+    if (btn && icon) {
+        icon.classList.add('animate-spin');
+        btn.disabled = true;
+        btn.classList.add('opacity-60', 'cursor-not-allowed');
+    }
+
+    try {
+        for (const acc of currentAccountsList) {
+            try {
+                const result = await ipcRenderer.invoke('quota:fetch', acc.id);
+                if (result && !result.error) {
+                    quotaCache[acc.id] = result.buckets;
+                }
+            } catch (err) {
+                console.error(`Failed to refresh quota for ${acc.email}:`, err);
+            }
+            await new Promise(r => setTimeout(r, 100));
+        }
+        updateAggregateQuotaUI();
+        if (accountsList && accountsList.children.length > 0) {
+            renderAccounts(currentAccountsList);
+        }
+    } finally {
+        isRefreshingAggregate = false;
+        if (btn && icon) {
+            icon.classList.remove('animate-spin');
+            btn.disabled = false;
+            btn.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
     }
 }
 

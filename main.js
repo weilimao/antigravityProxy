@@ -59,24 +59,11 @@ console.error = function (...args) {
     originalConsoleError.apply(console, args);
 };
 
-// Hot patch http-mitm-proxy dependency for Windows compatibility before loading ProxyEngine
-function hotPatchMitmProxy() {
-    try {
-        const targetFile = path.join(__dirname, 'node_modules', 'http-mitm-proxy', 'dist', 'lib', 'proxy.js');
-        if (fs.existsSync(targetFile)) {
-            let content = fs.readFileSync(targetFile, 'utf8');
-            if (content.includes('host: "0.0.0.0",')) {
-                content = content.replace('host: "0.0.0.0",', 'host: "127.0.0.1",');
-                fs.writeFileSync(targetFile, content, 'utf8');
-            }
-        }
-    } catch (e) {
-        console.error('[HotPatch] Failed to patch http-mitm-proxy:', e);
-    }
-}
-hotPatchMitmProxy();
-
 const settings = require('./src/core/settings');
+const patchManager = require('./src/core/patchManager');
+
+// Hot patch http-mitm-proxy dependency for Windows compatibility before loading ProxyEngine
+patchManager.hotPatchMitmProxy(__dirname);
 const ProxyEngine = require('./engine');
 const accountManager = require('./src/core/accountManager');
 const geminiCliAuth = require('./src/core/geminiCliAuth');
@@ -147,147 +134,7 @@ function startAgentProcess() {
 }
 
 // Async patcher for startup
-async function patchAgentAsar(enable) {
-    const homeDir = app.getPath('home');
-    let asarPath = '';
-    
-    if (process.platform === 'win32') {
-        asarPath = path.join(homeDir, 'AppData', 'Local', 'Programs', 'antigravity', 'resources', 'app.asar');
-    } else if (process.platform === 'darwin') {
-        asarPath = '/Applications/Antigravity.app/Contents/Resources/app.asar';
-    }
-    
-    if (!asarPath || !fs.existsSync(asarPath)) {
-        addLogToBuffer('⚠️ Antigravity Agent app.asar not found. Skipping auto-patch.');
-        return;
-    }
-    
-    const bakPath = asarPath + '.bak';
-    const tempDir = path.join(app.getPath('temp'), 'antigravity-agent-asar-temp');
-    
-    try {
-        if (enable) {
-            addLogToBuffer('⚙️ Auto-patching Antigravity Agent app.asar...');
-            
-            process.noAsar = true; // Disable Electron's ASAR interception
-            try {
-                if (!originalFs.existsSync(bakPath)) {
-                    originalFs.copyFileSync(asarPath, bakPath);
-                    addLogToBuffer('💾 Created backup of original app.asar.');
-                } else {
-                    // If backup already exists, restore it first to ensure we work on a clean original app.asar
-                    originalFs.copyFileSync(bakPath, asarPath);
-                    addLogToBuffer('⏪ Restored original app.asar from backup before patching.');
-                }
-
-                if (fs.existsSync(tempDir)) {
-                    fs.rmSync(tempDir, { recursive: true, force: true });
-                }
-                asar.extractAll(asarPath, tempDir);
-                addLogToBuffer('📂 Extracted app.asar.');
-            } finally {
-                process.noAsar = false; // Re-enable ASAR interception
-            }
-            
-            const targetJs = path.join(tempDir, 'dist', 'languageServer.js');
-            if (!fs.existsSync(targetJs)) {
-                throw new Error('dist/languageServer.js not found inside app.asar');
-            }
-            
-            let content = fs.readFileSync(targetJs, 'utf8');
-            if (!content.includes("env['HTTP_PROXY'] = 'http://127.0.0.1:18443'")) {
-                const match = content.match(/(\(0,\s*\w+\.setupNodeWrapper\)\(env\);?)/);
-                if (match) {
-                    const injectStr = `${match[0]}
-        // INJECTED BY ANTIGRAVITY PROXY DESKTOP
-        env['HTTP_PROXY']  = 'http://127.0.0.1:18443';
-        env['HTTPS_PROXY'] = 'http://127.0.0.1:18443';
-        env['http_proxy']  = 'http://127.0.0.1:18443';
-        env['https_proxy'] = 'http://127.0.0.1:18443';
-        env['NO_PROXY']    = 'localhost,127.0.0.1';
-        env['no_proxy']    = 'localhost,127.0.0.1';
-        try {
-            const os = require('os');
-            const path = require('path');
-            const fs = require('fs');
-            const defaultUserData = process.platform === 'win32'
-                ? path.join(os.homedir(), 'AppData', 'Roaming', 'antigravity-proxy-desktop')
-                : path.join(os.homedir(), 'Library', 'Application Support', 'antigravity-proxy-desktop');
-            let caPath = path.join(defaultUserData, 'certs', 'certs', 'ca.pem');
-            try {
-                const configPath = path.join(defaultUserData, 'config.json');
-                if (fs.existsSync(configPath)) {
-                    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                    if (config.dataDirectory) {
-                        caPath = path.join(config.dataDirectory, 'certs', 'certs', 'ca.pem');
-                    }
-                }
-            } catch (err) {}
-            env['SSL_CERT_FILE'] = caPath;
-        } catch (e) {}`;
-                    
-                    content = content.replace(match[0], injectStr);
-                    fs.writeFileSync(targetJs, content, 'utf8');
-                    addLogToBuffer('📝 Injected proxy env vars into languageServer.js.');
-                } else {
-                    throw new Error("Could not find insertion point 'setupNodeWrapper(env)' in languageServer.js");
-                }
-            } else {
-                addLogToBuffer('ℹ️ languageServer.js already contains patch, skipping write.');
-            }
-            
-            process.noAsar = true; // Disable Electron's ASAR interception
-            try {
-                await asar.createPackage(tempDir, asarPath);
-                addLogToBuffer('📦 Repacked app.asar.');
-                fs.rmSync(tempDir, { recursive: true, force: true });
-            } finally {
-                process.noAsar = false; // Re-enable ASAR interception
-            }
-            
-            addLogToBuffer('✅ Antigravity Agent patched successfully.');
-        }
-    } catch (err) {
-        addLogToBuffer(`❌ ASAR Patching failed: ${err.message}`);
-        console.error(err);
-        try { if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
-    }
-}
-
-// Sync restore for shutdown
-function patchAgentAsarSync(enable) {
-    if (enable) return; // Only support restore in sync mode
-    
-    const homeDir = app.getPath('home');
-    let asarPath = '';
-    
-    if (process.platform === 'win32') {
-        asarPath = path.join(homeDir, 'AppData', 'Local', 'Programs', 'antigravity', 'resources', 'app.asar');
-    } else if (process.platform === 'darwin') {
-        asarPath = '/Applications/Antigravity.app/Contents/Resources/app.asar';
-    }
-    
-    if (!asarPath || !fs.existsSync(asarPath)) return;
-    
-    const bakPath = asarPath + '.bak';
-    
-    try {
-        console.log('[ASAR Patcher] Restoring original app.asar...');
-        
-        process.noAsar = true; // Disable Electron's ASAR interception
-        try {
-            if (originalFs.existsSync(bakPath)) {
-                originalFs.copyFileSync(bakPath, asarPath);
-                originalFs.unlinkSync(bakPath);
-                console.log('[ASAR Patcher] Restored app.asar from backup.');
-            }
-        } finally {
-            process.noAsar = false; // Re-enable ASAR interception
-        }
-    } catch (err) {
-        console.error('[ASAR Patcher] Sync restore failed:', err);
-    }
-}
+// Patching utilities are delegated to patchManager
 
 let mainWindow;
 let tray;
@@ -358,6 +205,11 @@ function uninstallCert(callback) {
 }
 
 function addLogToBuffer(msg) {
+    if (settings && typeof settings.getEnableSystemLog === 'function') {
+        if (!settings.getEnableSystemLog()) {
+            return;
+        }
+    }
     const timestamp = new Date().toISOString().split('T')[1].replace('Z', '');
     const formatted = `[${timestamp}] ${msg}`;
     logBuffer.push(formatted);
@@ -369,8 +221,8 @@ function addLogToBuffer(msg) {
 }
 global.addLogToBuffer = addLogToBuffer;
 
-// Base64 generic proxy icon (16x16 standard system tray size)
-const iconBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAC0SURBVDhPzZExDoQwDATz/x9NQUFDR0FDRUv/v0BDQ0v/P0BDRXvvvS2yItnZ2M4s2yN/5xOQYg2eYI1c8ARrrA3f8IE1vMMHFuQEH/CBE1yQE/wA4zMccEFO8AOMz3DABTkh11f4gROs4R0+sIY1fMMH1mCNXPAEa1CDP/ADz1CDP/ADD7jBE6zBGn7gB56hBnf4gQfc4AlW5IQf+IFnqMEdftA11OQOP/AONciyH/gT/0C+/QO82g2f9kYc4QAAAABJRU5ErkJggg==';
+// Base64 16x16 tray icon fallback
+const iconBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAChUlEQVR4nCWSzU5TYRCGZ+b7zteetqeUChR/UBTFlCBBMQFNCJoYf8IFuPEKXHoDrrwF9R40MWLEROPOhcEIBtSFCYoYDYoU2sI5p9/fmIOzmNWbyfNmHhRBNyES4v4iIokoAIgRmL1n59kxO/Ce90f+TxMKIqlESCgB0YLj7IT0iM6lxiWADp0FBkmQpSWpoixLyhm0HuhAcACAdvwWEuaCro7ZSXUTGZitzDBQRKIcUlmjJpAD1bFbE7crBh8uP/i0t4yCC0G/B286bWSfwUsMItnFyEooJaL6+JXo+MHecu/FwzMqKKNEF2Ah35sVRCIGyFEeUTIBgSwfPK4ujy7trS02vg7VRvoLR5kCBxpz+/UACQAQhAFgBOu5ND2xPVL+1Zc0RKoKlbGec94BMlvyiMTMlBVhZ7zuuNR2R2JqNO0R1fHhE9Vh6bheqkc29EY7r5k9gJcMbDjxECVJu/viDXH+9N+n73+/fLvaVBPh1IUjI+PR6MvN+QICW539gYE168QlIihUBZz4+CXaNH2nJlsV6iTxVrgmNzDYVqa9w2wzcJXvARCVSq0+fCZ/qCaM+bmwVioOxBH8gZ9Tx04iqO+t9W9Li61Wg8FirlCznJ+cvn73zs3nH1cXRa4vpf4tEyYUNgOxrXlw7+zs0P17j9+8e+VFLJkZ0cVtfjS3srL8ev3H6uDsjUvXruYhmH/24smHucHGcKs9Y9sC0AMDSlUFpEKxMjQ0aWRklbHxbpcIFSM3O0VRQgpSbHxeX9iNmwweRVDJRCUplRLFKlZrYVCMDOU1UAymo5t+o202tNaeHbCXAI6ZPFtrwOtdjJXD2HR8PgVlJXiX+rZ1NjM8U93/AxRkSoiTkQsIAAAAAElFTkSuQmCC';
 
 // Function to update global config for IDE and Agent
 async function updateSettings(enable) {
@@ -416,87 +268,15 @@ async function updateSettings(enable) {
 // Function to inject/restore HTTP_PROXY in agentapi.bat for CLI interception
 // CLI's language_server.exe is spawned via agentapi.bat — we patch the bat to
 // inject HTTP_PROXY so the Go binary routes all traffic through our local proxy.
-function updateAgentapiBat(enable) {
-    const appData = app.getPath('appData');
-    const homeDir = app.getPath('home');
-    
-    const caPath = path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem');
-
-    // bat 文件的可能路径（兼容 Windows AppData 和 macOS ~/Library/Application Support）
-    const batCandidates = [
-        path.join(appData, 'antigravity', 'bin', 'agentapi.bat'),
-        path.join(appData, 'Antigravity', 'bin', 'agentapi.bat'),
-        path.join(homeDir, '.antigravity', 'bin', 'agentapi.bat'),
-    ];
-    // shell script 路径（macOS）
-    const shCandidates = [
-        path.join(appData, 'antigravity', 'bin', 'agentapi'),
-        path.join(appData, 'Antigravity', 'bin', 'agentapi'),
-        path.join(homeDir, '.antigravity', 'bin', 'agentapi'),
-    ];
-
-    const PROXY_URL = 'http://127.0.0.1:18443';
-    const BAT_MARKER = ':: ANTIGRAVITY_PROXY_INJECT';
-
-    const patchBat = (filePath) => {
-        try {
-            if (!fs.existsSync(filePath)) return false;
-            const original = fs.readFileSync(filePath, 'utf8');
-            if (enable) {
-                if (original.includes(BAT_MARKER)) return true; // already patched
-                const inject = `${BAT_MARKER}\r\nset HTTP_PROXY=${PROXY_URL}\r\nset HTTPS_PROXY=${PROXY_URL}\r\nset NO_PROXY=localhost,127.0.0.1\r\nset SSL_CERT_FILE=${caPath}\r\n`;
-                // Insert after @echo off (first line)
-                const patched = original.replace(/^(@echo off\s*[\r\n]+)/i, `$1${inject}`);
-                fs.writeFileSync(filePath, patched, 'utf8');
-            } else {
-                if (!original.includes(BAT_MARKER)) return true; // already clean
-                // Remove injected block
-                const cleaned = original.replace(new RegExp(`${BAT_MARKER}\\r?\\n(?:set [^\\r\\n]+\\r?\\n){1,6}`), '');
-                fs.writeFileSync(filePath, cleaned, 'utf8');
-            }
-            return true;
-        } catch (e) {
-            console.error(`Failed to patch ${filePath}:`, e);
-            return false;
-        }
-    };
-
-    const SH_MARKER = '# ANTIGRAVITY_PROXY_INJECT';
-    const patchSh = (filePath) => {
-        try {
-            if (!fs.existsSync(filePath)) return false;
-            const original = fs.readFileSync(filePath, 'utf8');
-            if (enable) {
-                if (original.includes(SH_MARKER)) return true;
-                const inject = `${SH_MARKER}\nexport HTTP_PROXY=${PROXY_URL}\nexport HTTPS_PROXY=${PROXY_URL}\nexport NO_PROXY=localhost,127.0.0.1\nexport SSL_CERT_FILE="${caPath}"\n`;
-                const patched = original.replace(/^(#![^\n]+\n)/m, `$1${inject}`);
-                fs.writeFileSync(filePath, patched, 'utf8');
-            } else {
-                if (!original.includes(SH_MARKER)) return true;
-                const cleaned = original.replace(new RegExp(`${SH_MARKER}\\n(?:export [^\\n]+\\n){1,6}`), '');
-                fs.writeFileSync(filePath, cleaned, 'utf8');
-            }
-            return true;
-        } catch (e) {
-            console.error(`Failed to patch ${filePath}:`, e);
-            return false;
-        }
-    };
-
-    let batPatched = false;
-    for (const p of batCandidates) {
-        if (patchBat(p)) { batPatched = true; break; }
-    }
-    for (const p of shCandidates) {
-        if (patchSh(p)) break;
-    }
-    return batPatched;
-}
+// Script patching utilities are delegated to patchManager
 
 function createWindow() {
+    const isSilent = process.argv.includes('--silent');
     mainWindow = new BrowserWindow({
         width: 850,
         height: 700,
+        show: !isSilent,
+        icon: path.join(__dirname, 'src', 'ui', 'icon.png'),
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
@@ -534,9 +314,27 @@ function createWindow() {
     });
 }
 
+function updateLoginItemSettings() {
+    try {
+        const autoStart = settings.getAutoStart();
+        const silentStart = settings.getSilentStart();
+        app.setLoginItemSettings({
+            openAtLogin: autoStart,
+            path: process.execPath,
+            args: silentStart ? ['--silent'] : []
+        });
+        console.log(`[AutoStart] Updated login item settings. openAtLogin: ${autoStart}, args: ${silentStart ? '--silent' : 'none'}`);
+    } catch (e) {
+        console.error('[AutoStart] Failed to update login item settings:', e);
+    }
+}
+
 app.whenReady().then(async () => {
     // 初始化设置管理器
     settings.init(app.getPath('userData'));
+
+    // 同步自启动设置到操作系统
+    updateLoginItemSettings();
 
     // 显式更新数据统计模块的路径，纠正 ProxyEngine 实例化时的时序差
     const statsTracker = require('./src/core/stats');
@@ -548,30 +346,22 @@ app.whenReady().then(async () => {
 
     createWindow();
 
-    // Ensure tray-icon.png on disk is valid by writing the base64 content
+    // 优先从打包进 ASAR 的本地资源文件中加载系统托盘图标，若不存在则使用 base64 作为后备
+    const trayIconPath = path.join(__dirname, 'src', 'ui', 'tray-icon.png');
+    let trayIcon;
     try {
-        const base64Data = iconBase64.replace(/^data:image\/png;base64,/, "");
-        fs.writeFileSync(path.join(__dirname, 'tray-icon.png'), Buffer.from(base64Data, 'base64'));
+        if (fs.existsSync(trayIconPath)) {
+            trayIcon = nativeImage.createFromPath(trayIconPath);
+        } else {
+            trayIcon = nativeImage.createFromDataURL(iconBase64);
+        }
     } catch (e) {
-        console.error('Failed to write tray-icon.png:', e);
+        console.error('Failed to load tray icon from path, fallback to base64:', e);
+        trayIcon = nativeImage.createFromDataURL(iconBase64);
     }
-
-    // Use a native standard 16x16 icon created from the Base64 Data URL to guarantee it renders correctly
-    const iconImage = nativeImage.createFromDataURL(iconBase64);
-    tray = new Tray(iconImage);
-
-    const contextMenu = Menu.buildFromTemplate([
-        { label: 'Show Dashboard', click: () => mainWindow.show() },
-        { type: 'separator' },
-        { label: 'Quit Proxy Engine', click: () => {
-            isQuitting = true;
-            app.quit();
-        }}
-    ]);
-
-    tray.setToolTip('Antigravity Proxy');
-    tray.setContextMenu(contextMenu);
+    tray = new Tray(trayIcon);
     tray.on('click', () => mainWindow.show());
+    setupTrayMenu(app.getLocale());
 
     // Hook up engine events to IPC
     engine.on('log', (msg) => {
@@ -608,16 +398,23 @@ app.whenReady().then(async () => {
         }
     });
 
-    // 核心改造：启动代理服务，但默认设为直通模式
+    // 核心改造：启动代理服务，从配置加载上次记住的拦截模式
+    const savedInterceptMode = settings.getIsInterceptMode();
     engine.start();
-    engine.setMode(false);
+    engine.setMode(savedInterceptMode);
 
     // 将系统的云端端点强行指向本地 (App 生命周期内有效)
     await updateSettings(true);
     // 改写 agentapi.bat 注入 HTTP_PROXY，让 CLI 的 language_server 也走本地代理
-    const batPatched = updateAgentapiBat(true);
+    const batPatched = patchManager.updateAgentapiBat(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));
     // 动态原地注入用户本地 app.asar 代理环境变量
-    await patchAgentAsar(true);
+    await patchManager.patchAgentAsar(
+        true,
+        app.getPath('home'),
+        path.join(app.getPath('temp'), 'antigravity-agent-asar-temp'),
+        path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'),
+        addLogToBuffer
+    );
 
     // 初始化自动更新管理器
     const UpdateManager = require('./src/core/updateManager');
@@ -697,12 +494,20 @@ ipcMain.on('accounts:remove', (event, id) => {
     accountManager.removeAccount(id);
 });
 
+ipcMain.on('accounts:toggle-enabled', (event, id, enabled) => {
+    accountManager.updateAccountEnabled(id, enabled);
+    const acc = accountManager.getAccountById(id);
+    if (acc) {
+        addLogToBuffer(`🔄 Account ${acc.email} is now ${enabled ? 'enabled' : 'disabled'} in the pool.`);
+    }
+});
+
 ipcMain.on('pool:toggle', (event, enable) => {
     accountManager.setPoolMode(enable);
     if (enable) {
-        addLogToBuffer(`🔄 Account Pool Mode enabled. Distributing requests across ${accountManager.getAccounts().length} accounts.`);
+        addLogToBuffer(`🔄 Account Load Balancing enabled. Distributing requests across ${accountManager.getAccounts().length} accounts.`);
     } else {
-        addLogToBuffer('🔄 Account Pool Mode disabled. Using client-provided credentials.');
+        addLogToBuffer('🔄 Account Load Balancing disabled. Using client-provided credentials.');
     }
 });
 
@@ -724,6 +529,9 @@ ipcMain.handle('quota:fetch', async (event, accountId) => {
         if (res && res.buckets) {
             accountManager.updateAccountCooldownFromQuota(accountId, res.buckets);
         }
+        if (res && res.tier) {
+            accountManager.updateAccountTier(accountId, res.tier);
+        }
         return res;
     } catch (err) {
         return { error: err.message, buckets: [] };
@@ -734,6 +542,7 @@ ipcMain.handle('quota:fetch', async (event, accountId) => {
 ipcMain.on('toggle', async (event, enable) => {
     // 热切换：只需调用 Engine 的 setMode 即可瞬间生效
     engine.setMode(enable);
+    settings.setIsInterceptMode(enable);
     if (enable) {
         addLogToBuffer('✅ Mode Switched: Intercept ON (Traffic buffering & retrying 503 errors)');
     } else {
@@ -765,6 +574,31 @@ ipcMain.on('settings:get-dir-sync', (event) => {
         activeDir: settings.getActiveDataDirectory(),
         defaultDir: app.getPath('userData')
     };
+});
+
+ipcMain.on('settings:get-system-log-enabled', (event) => {
+    event.returnValue = settings.getEnableSystemLog();
+});
+
+ipcMain.on('settings:set-system-log-enabled', (event, enable) => {
+    settings.setEnableSystemLog(enable);
+});
+
+ipcMain.on('settings:get-startup-options', (event) => {
+    event.returnValue = {
+        autoStart: settings.getAutoStart(),
+        silentStart: settings.getSilentStart()
+    };
+});
+
+ipcMain.on('settings:set-auto-start', (event, enable) => {
+    settings.setAutoStart(enable);
+    updateLoginItemSettings();
+});
+
+ipcMain.on('settings:set-silent-start', (event, enable) => {
+    settings.setSilentStart(enable);
+    updateLoginItemSettings();
 });
 
 ipcMain.handle('settings:change-dir', async (event) => {
@@ -814,8 +648,14 @@ ipcMain.handle('settings:change-dir', async (event) => {
         event.sender.send('settings:migration-progress', { step: 'patch-externals', status: '正在更新外部编辑器代理补丁...' });
         // 更新 IDE 及 CLI 设置的证书路径
         await updateSettings(true);
-        updateAgentapiBat(true);
-        await patchAgentAsar(true);
+        patchManager.updateAgentapiBat(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));
+        await patchManager.patchAgentAsar(
+            true,
+            app.getPath('home'),
+            path.join(app.getPath('temp'), 'antigravity-agent-asar-temp'),
+            path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'),
+            addLogToBuffer
+        );
 
         event.sender.send('settings:migration-progress', { step: 'restart-proxy', status: '正在重新启动代理服务器...' });
         engine.start();
@@ -965,6 +805,32 @@ app.on('before-quit', () => {
     } catch (e) {
         console.error('Failed to restore settings synchronously:', e);
     }
-    updateAgentapiBat(false);    // Restore agentapi.bat on exit
-    patchAgentAsarSync(false);   // Restore app.asar on exit
+    patchManager.updateAgentapiBat(false, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));    // Restore agentapi.bat on exit
+    patchManager.patchAgentAsarSync(false, app.getPath('home'));   // Restore app.asar on exit
+});
+
+function setupTrayMenu(lang) {
+    const systemLocale = app.getLocale();
+    const isZh = lang ? lang.startsWith('zh') : (systemLocale && systemLocale.startsWith('zh'));
+    
+    const showDashboardLabel = isZh ? '显示控制面板' : 'Show Dashboard';
+    const quitLabel = isZh ? '退出代理引擎' : 'Quit Proxy Engine';
+
+    const contextMenu = Menu.buildFromTemplate([
+        { label: showDashboardLabel, click: () => mainWindow.show() },
+        { type: 'separator' },
+        { label: quitLabel, click: () => {
+            isQuitting = true;
+            app.quit();
+        }}
+    ]);
+
+    if (tray) {
+        tray.setToolTip('Antigravity Proxy');
+        tray.setContextMenu(contextMenu);
+    }
+}
+
+ipcMain.on('settings:language-changed', (event, lang) => {
+    setupTrayMenu(lang);
 });

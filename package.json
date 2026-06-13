@@ -1,6 +1,6 @@
 {
   "name": "antigravity-proxy-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Antigravity Proxy Desktop Client",
   "main": "main.js",
   "scripts": {
@@ -36,12 +36,18 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": null
+      "icon": "icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
     }
   },
   "devDependencies": {

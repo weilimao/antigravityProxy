@@ -10,8 +10,11 @@ permissions:
 
 jobs:
   release:
-    name: Build & Publish (Windows)
-    runs-on: windows-latest
+    name: Build & Publish (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest] # 分别在 Windows 和 macOS 镜像中编译
 
     steps:
       - name: Check out Git repository
@@ -30,3 +33,8 @@ jobs:
         run: npm run publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Release Notes
+        run: gh release edit ${{ github.ref_name }} --notes-file release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

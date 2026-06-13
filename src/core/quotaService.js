@@ -103,6 +103,46 @@ async function loadCodeAssist(accessToken, isAntigravity) {
 
     if (resp.error) throw new Error(resp.error.message || 'loadCodeAssist failed');
 
+    // Parse subscription tier: prioritize paidTier, fall back to allowedTiers
+    let tier = 'Standard';
+    if (resp.paidTier && resp.paidTier.id) {
+        const paidTierId = resp.paidTier.id.toLowerCase();
+        const paidTierName = (resp.paidTier.name || '').toLowerCase();
+        if (paidTierId.includes('ultra') || paidTierName.includes('ultra')) {
+            tier = 'Ultra';
+        } else if (paidTierId.includes('pro') || paidTierName.includes('pro')) {
+            tier = 'Pro';
+        } else if (paidTierId.includes('enterprise') || paidTierName.includes('enterprise')) {
+            tier = 'Enterprise';
+        } else if (paidTierId.includes('standard') || paidTierName.includes('standard')) {
+            tier = 'Standard';
+        } else if (paidTierId.includes('free') || paidTierName.includes('free')) {
+            tier = 'Free';
+        } else {
+            const raw = paidTierId.split('-')[0];
+            tier = raw ? (raw.charAt(0).toUpperCase() + raw.slice(1)) : 'Standard';
+        }
+    } else if (resp.allowedTiers && resp.allowedTiers.length > 0) {
+        const defaultTier = resp.allowedTiers.find(t => t.isDefault) || resp.allowedTiers[0];
+        const tierId = (defaultTier.id || '').toLowerCase();
+        const displayName = defaultTier.displayName || '';
+        
+        if (tierId.includes('pro') || displayName.toLowerCase().includes('pro')) {
+            tier = 'Pro';
+        } else if (tierId.includes('ultra') || displayName.toLowerCase().includes('ultra')) {
+            tier = 'Ultra';
+        } else if (tierId.includes('enterprise') || displayName.toLowerCase().includes('enterprise')) {
+            tier = 'Enterprise';
+        } else if (tierId.includes('standard') || displayName.toLowerCase().includes('standard')) {
+            tier = 'Standard';
+        } else if (tierId.includes('free') || displayName.toLowerCase().includes('free')) {
+            tier = 'Free';
+        } else {
+            const raw = tierId.split('-')[0];
+            tier = raw ? (raw.charAt(0).toUpperCase() + raw.slice(1)) : 'Standard';
+        }
+    }
+
     // Fallback logic for project mapping
     let projectId = '';
     if (resp.cloudaicompanionProject) {
@@ -153,7 +193,7 @@ async function loadCodeAssist(accessToken, isAntigravity) {
     }
 
     if (!projectId) throw new Error('No project in loadCodeAssist response');
-    return projectId;
+    return { projectId, tier };
 }
 
 /** Step 2: retrieveUserQuota / retrieveUserQuotaSummary 获取 buckets */
@@ -433,8 +473,11 @@ async function fetchQuota(account, accountManager) {
     try {
         // Step 1: 获取 project（如果报错，尝试刷新 token 并继续）
         let project = '';
+        let tier = 'Standard';
         try {
-            project = await loadCodeAssist(token, isAntigravity);
+            const loadRes = await loadCodeAssist(token, isAntigravity);
+            project = loadRes.projectId;
+            tier = loadRes.tier;
         } catch (err) {
             // 如果 token 错误或接口报错，且有 refresh_token，尝试刷新一次
             if (account.refresh_token) {
@@ -442,7 +485,9 @@ async function fetchQuota(account, accountManager) {
                 try {
                     token = await refreshToken(account);
                     if (accountManager) accountManager.updateAccessToken(account.id, token);
-                    project = await loadCodeAssist(token, isAntigravity);
+                    const loadRes = await loadCodeAssist(token, isAntigravity);
+                    project = loadRes.projectId;
+                    tier = loadRes.tier;
                 } catch (refreshErr) {
                     console.warn('[QuotaService] Failed to loadCodeAssist after token refresh, continuing with empty project:', refreshErr.message);
                 }
@@ -462,11 +507,11 @@ async function fetchQuota(account, accountManager) {
         // Step 2: 获取 quota buckets
         const rawBuckets = await retrieveUserQuota(token, project, isAntigravity);
         console.log(`[QuotaService] Raw buckets for Gemini CLI:`, rawBuckets);
-        return { buckets: parseBuckets(rawBuckets) };
+        return { buckets: parseBuckets(rawBuckets), tier };
 
     } catch (err) {
         console.error('[QuotaService] Error:', err.message);
-        return { error: err.message, buckets: [] };
+        return { error: err.message, buckets: [], tier: 'Standard' };
     }
 }
 

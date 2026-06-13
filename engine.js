@@ -220,7 +220,7 @@ class ProxyEngine extends EventEmitter {
                 }
 
                 // 提取粘性会话 Key（在 attemptRequest 外提取一次，确保整个请求过程包含重试使用相同会话 Key）
-                const sessionKey = require('./src/core/sessionRouter').extractSessionKey(req);
+                const sessionKey = require('./src/core/sessionRouter').extractSessionKey(req, reqBody);
 
                 // Logging details helper
                 let inTokens = 0, outTokens = 0, cachedTokens = 0;
@@ -279,11 +279,21 @@ class ProxyEngine extends EventEmitter {
                         // --- 账号池 token 注入 ---
                         const accountManager = require('./src/core/accountManager');
                         const customHeaders = { ...req.headers, host: targetHost };
-                        const poolAccount = accountManager.getAccountBySticky(
-                            sessionKey,
-                            currentModel,
-                            (msg) => this.emit('log', msg)
-                        );
+                        let poolAccount = null;
+                        if (accountManager.getPoolMode()) {
+                            poolAccount = accountManager.getAccountBySticky(
+                                sessionKey,
+                                currentModel,
+                                (msg) => this.emit('log', msg)
+                            );
+                            if (!poolAccount) {
+                                return reject(new Error('QUOTA_EXHAUSTED'));
+                            }
+                        } else {
+                            if (attemptIndex === 0) {
+                                this.emit('log', `⚖️ [负载均衡] 负载均衡开关已关闭，不走负载均衡逻辑，直接使用客户端凭证`);
+                            }
+                        }
                         let finalReqBody = reqBody;
 
                         if (poolAccount) {
@@ -395,6 +405,22 @@ class ProxyEngine extends EventEmitter {
                                         { model: 'Gemini 5-Hour Quota', usedFraction: 1.0 },
                                         { model: 'Claude Weekly Quota', usedFraction: 1.0 },
                                         { model: 'Claude 5-Hour Quota', usedFraction: 1.0 }
+                                    ],
+                                    groups: [
+                                        {
+                                            displayName: 'Gemini Models',
+                                            buckets: [
+                                                { displayName: 'Weekly Limit', remainingFraction: 0.0 },
+                                                { displayName: 'Five Hour Limit', remainingFraction: 0.0 }
+                                            ]
+                                        },
+                                        {
+                                            displayName: 'Claude and GPT models',
+                                            buckets: [
+                                                { displayName: 'Weekly Limit', remainingFraction: 0.0 },
+                                                { displayName: 'Five Hour Limit', remainingFraction: 0.0 }
+                                            ]
+                                        }
                                     ]
                                 };
                                 const mockBuffer = Buffer.from(JSON.stringify(mockQuotaResponse), 'utf8');
@@ -561,6 +587,7 @@ class ProxyEngine extends EventEmitter {
                         let shouldRetry = isRetryableError && attempt < maxRetries;
                         if (error.message === 'QUOTA_EXHAUSTED') {
                             const hasAvailableAccounts = accountManager.getPoolMode() && accountManager.accounts.some(a => {
+                                if (a.enabled === false) return false;
                                 const category = accountManager.getModelCategory(currentModel);
                                 const cooldown = a.cooldowns ? a.cooldowns[category] : a.cooldownUntil;
                                 return !cooldown || Date.now() >= cooldown;

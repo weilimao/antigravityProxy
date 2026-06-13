@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh" class="dark" data-theme="dark">
+<html lang="zh" class="" data-theme="light">
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
@@ -141,7 +141,7 @@
         <nav class="flex items-center gap-8">
             <a id="nav-dashboard" class="text-primary dark:text-primary-fixed-dim border-b-2 border-primary pb-0.5 flex flex-col items-center" href="#" onclick="switchView('dashboard')">
                 <span class="nav-link-en text-[10px] font-bold tracking-wider">DASHBOARD</span>
-                <span class="nav-link-zh text-[13px] font-medium" data-i18n="title">控制面板</span>
+                <span class="nav-link-zh text-[13px] font-medium" data-i18n="title">控制台</span>
             </a>
             <a id="nav-accounts" class="text-outline hover:text-primary transition-colors pb-0.5 flex flex-col items-center" href="#" onclick="switchView('accounts')">
                 <span class="nav-link-en text-[10px] font-bold tracking-wider">ACCOUNTS</span>
@@ -184,7 +184,7 @@
         <!-- 页面标题 -->
         <div class="flex justify-between items-end">
             <div>
-                <h1 class="text-2xl font-bold text-on-surface dark:text-white" data-i18n="title">控制面板</h1>
+                <h1 class="text-2xl font-bold text-on-surface dark:text-white" data-i18n="title">控制台</h1>
                 <p class="text-xs text-outline dark:text-outline-variant" data-i18n="logBufferTitle">监控和分析被拦截的代理流量</p>
             </div>
             <div class="flex gap-2">
@@ -192,6 +192,25 @@
                     <span class="material-symbols-outlined text-[16px]">download</span>
                     导出日志
                 </button>
+            </div>
+        </div>
+
+        <!-- 账号池总额度汇总 -->
+        <div id="aggregate-quota-panel" class="hidden glass-card rounded-xl p-4 flex-col gap-3 relative overflow-hidden border border-outline-variant/30">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <span class="text-[11px] font-bold text-outline dark:text-outline-variant uppercase tracking-wider">账号池总额度汇总</span>
+                    <button id="btnRefreshAggregateQuota"
+                        title="刷新账号池所有账号的配额"
+                        class="flex items-center gap-1 text-[10px] font-semibold text-outline hover:text-primary dark:hover:text-primary-fixed-dim bg-outline-variant/10 hover:bg-primary/10 border border-outline-variant/20 hover:border-primary/30 px-2 py-0.5 rounded transition-all duration-200 select-none">
+                        <span class="material-symbols-outlined text-[12px]" id="btnRefreshAggregateIcon">sync</span>
+                        <span>一键刷新</span>
+                    </button>
+                </div>
+                <span class="text-[11px] text-primary dark:text-primary-fixed-dim font-bold" id="aggregate-quota-info">共 0 个账号</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="aggregate-quota-grid">
+                <!-- JS 动态填充 -->
             </div>
         </div>
 
@@ -249,11 +268,36 @@
             <div class="glass-card rounded-xl p-5 flex flex-col gap-2 relative overflow-hidden">
                 <div class="text-[11px] font-bold text-outline dark:text-outline-variant uppercase tracking-wider" data-i18n="memoryUsage">内存占用</div>
                 <div class="flex items-center justify-between mt-1">
-                    <div class="flex flex-col">
-                        <span class="text-[24px] font-data-mono font-medium text-blue-600 dark:text-blue-400" id="valMemory">0.0 MB</span>
-                        <span class="text-[13px] text-slate-500 dark:text-slate-400 mt-1"><span data-i18n="sysProcess">活跃进程:</span> <span class="font-data-mono font-bold text-on-surface dark:text-white" id="valProcessCount">0</span></span>
+                    <div class="flex flex-col z-10 shrink-0">
+                        <span class="text-[24px] font-data-mono font-medium text-blue-600 dark:text-blue-400 leading-none" id="valMemory">0.0 MB</span>
+                        <span class="text-[13px] text-slate-500 dark:text-slate-400 mt-2"><span data-i18n="sysProcess">活跃进程:</span> <span class="font-data-mono font-bold text-on-surface dark:text-white" id="valProcessCount">0</span></span>
                     </div>
-                    <div class="absolute -right-4 -bottom-4 text-blue-500 opacity-5">
+                    <!-- 内存占用曲线图 -->
+                    <div class="w-[200px] h-[45px] relative z-10 mr-1" id="memoryChartContainer">
+                        <svg id="memorySvg" class="w-full h-full" viewBox="0 0 200 45" style="overflow: visible;" preserveAspectRatio="none">
+                            <defs>
+                                <linearGradient id="memoryLineGrad" x1="0%" x2="100%" y1="0%" y2="0%">
+                                    <stop offset="0%" style="stop-color:#3b82f6;"></stop>
+                                    <stop offset="100%" style="stop-color:#a855f7;"></stop>
+                                </linearGradient>
+                                <linearGradient id="gradMemory" x1="0%" x2="0%" y1="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.25"></stop>
+                                    <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.0"></stop>
+                                </linearGradient>
+                                <filter id="memoryGlow" x="-20%" y="-20%" width="140%" height="140%">
+                                    <feGaussianBlur stdDeviation="1.2" result="blur" />
+                                    <feMerge>
+                                        <feMergeNode in="blur" />
+                                        <feMergeNode in="SourceGraphic" />
+                                    </feMerge>
+                                </filter>
+                            </defs>
+                            <path id="memoryChartArea" d="" fill="url(#gradMemory)"></path>
+                            <path id="memoryChartPath" d="" fill="none" stroke="url(#memoryLineGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#memoryGlow)"></path>
+                            <circle id="memoryChartDot" cx="-10" cy="-10" r="3" fill="#ffffff" stroke="#a855f7" stroke-width="1.5" style="transition: cx 0.2s, cy 0.2s;"></circle>
+                        </svg>
+                    </div>
+                    <div class="absolute -right-4 -bottom-4 text-blue-500 opacity-5 pointer-events-none">
                         <span class="material-symbols-outlined" style="font-size: 80px;">memory</span>
                     </div>
                 </div>
@@ -267,7 +311,8 @@
                 
                 <!-- 快捷选项与筛选 -->
                 <div class="flex gap-1 bg-slate-100 dark:bg-white/5 p-0.5 rounded-lg text-[10px]" id="chartRangeSelector">
-                    <button data-range="today" class="px-2.5 py-0.5 text-[10px] bg-white dark:bg-[#1a1f30] text-primary dark:text-primary-fixed-dim rounded-md shadow-sm font-semibold">今日</button>
+                    <button data-range="24h" class="px-2.5 py-0.5 text-[10px] bg-white dark:bg-[#1a1f30] text-primary dark:text-primary-fixed-dim rounded-md shadow-sm font-semibold">近24小时</button>
+                    <button data-range="today" class="px-2.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 rounded-md transition-all font-medium">今日</button>
                     <button data-range="3d" class="px-2.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 rounded-md transition-all font-medium">近三天</button>
                     <button data-range="7d" class="px-2.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 rounded-md transition-all font-medium">七天</button>
                     <button data-range="30d" class="px-2.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 rounded-md transition-all font-medium">30天</button>
@@ -281,7 +326,7 @@
             <!-- 趋势图成本汇总统计 -->
             <div class="flex flex-wrap gap-x-6 gap-y-2 text-[12px] text-slate-500 dark:text-slate-400 pb-3 border-b border-outline-variant/10 mb-3" id="trendCostSummary">
                 <span class="flex items-center gap-1.5">
-                    <span id="labelSummaryTotal" class="font-medium">今日总成本:</span>
+                    <span id="labelSummaryTotal" class="font-medium">近24小时总成本:</span>
                     <span id="valSummaryTotal" class="font-data-mono font-bold text-red-600 dark:text-red-400">$0.0000</span>
                 </span>
                 <span class="flex items-center gap-1.5">
@@ -594,11 +639,11 @@
                                 <div class="text-[10px] text-outline">使用官方插件凭证授权</div>
                             </div>
                         </button>
-                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors flex items-center gap-2 border-t border-outline-variant/10 mt-1 pt-3" onclick="startLogin('gemini-cli')">
-                            <span class="material-symbols-outlined text-outline text-[16px]">terminal</span>
+                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface/40 dark:text-white/45 cursor-not-allowed flex items-center gap-2 border-t border-outline-variant/10 mt-1 pt-3" disabled title="已暂时禁用 Gemini CLI 登录">
+                            <span class="material-symbols-outlined text-outline/40 text-[16px]">terminal</span>
                             <div>
-                                <div class="font-bold">Gemini CLI</div>
-                                <div class="text-[10px] text-outline">使用终端 CLI 凭证授权</div>
+                                <div class="font-bold">Gemini CLI (已禁用)</div>
+                                <div class="text-[10px] text-outline/40">使用终端 CLI 凭证授权</div>
                             </div>
                         </button>
                     </div>
@@ -642,14 +687,21 @@
 
     <!-- 系统设置视图 -->
     <div id="view-settings" class="hidden flex-col gap-6 w-full">
-        <div class="flex justify-between items-end">
+        <div class="flex justify-between items-center border-b border-outline-variant/20 pb-4">
             <div>
                 <h1 class="text-2xl font-bold text-on-surface dark:text-white" data-i18n="settingsTitle">系统设置</h1>
                 <p class="text-xs text-outline dark:text-outline-variant" data-i18n="settingsDesc">配置代理软件的底层行为与本地数据存储路径</p>
             </div>
+            <!-- Sub Tab Menu -->
+            <div class="flex gap-1 bg-slate-100 dark:bg-white/5 p-1 rounded-lg text-[12px]">
+                <button id="btnSettingsTabGeneral" class="px-4 py-1.5 text-[12px] bg-white dark:bg-[#1a1f30] text-primary dark:text-primary-fixed-dim rounded-md shadow-sm font-bold cursor-pointer transition-all duration-200">参数配置</button>
+                <button id="btnSettingsTabAbout" class="px-4 py-1.5 text-[12px] text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 rounded-md font-medium cursor-pointer transition-all duration-200">关于</button>
+            </div>
         </div>
 
-        <!-- 数据存储路径卡片 -->
+        <!-- 参数配置面板 -->
+        <div id="settings-panel-general" class="flex flex-col gap-6 w-full">
+            <!-- 数据存储路径卡片 -->
         <div class="glass-card rounded-xl p-6 flex flex-col gap-4">
             <h2 class="text-[15px] font-bold text-on-surface dark:text-white flex items-center gap-2">
                 <span class="material-symbols-outlined text-primary text-[20px]">folder_open</span>
@@ -680,42 +732,139 @@
             </div>
         </div>
 
-        <!-- 软件更新卡片 -->
+        <!-- 控制台日志设置卡片 -->
         <div class="glass-card rounded-xl p-6 flex flex-col gap-4">
             <h2 class="text-[15px] font-bold text-on-surface dark:text-white flex items-center gap-2">
-                <span class="material-symbols-outlined text-primary text-[20px]">system_update_alt</span>
-                <span data-i18n="updateTitle">软件更新</span>
+                <span class="material-symbols-outlined text-primary text-[20px]">terminal</span>
+                <span data-i18n="logSettingTitle">控制台日志设置</span>
             </h2>
-            <p class="text-xs text-outline leading-relaxed" data-i18n="updateTip">
-                检查并获取 Antigravity Proxy 的最新版本。建议您保持软件为最新版本以获得最佳体验和最新功能。
+            <p class="text-xs text-outline leading-relaxed" data-i18n="logSettingTip">
+                启用或禁用底部控制台系统日志的实时输出。禁用此功能可减少日志输出和渲染，从而显著节省内存并提升系统运行性能。
             </p>
             
             <div class="flex items-center justify-between border-t border-outline-variant/20 pt-4 mt-2">
                 <div class="flex flex-col gap-0.5">
-                    <span class="text-[11px] font-bold text-outline uppercase tracking-wider" data-i18n="currentVersionLabel">当前版本</span>
-                    <span id="lblCurrentVersion" class="font-data-mono text-[13px] text-on-surface dark:text-white font-semibold">v1.0.0</span>
+                    <span class="text-[13px] font-bold text-on-surface dark:text-white" data-i18n="enableLogLabel">启用控制台系统日志</span>
+                    <span class="text-[11px] text-outline text-wrap max-w-[80%]" data-i18n="enableLogDesc">关闭后将不再输出和记录新的系统日志，并隐藏底部的系统日志抽屉。</span>
                 </div>
-                <button id="btnCheckUpdate" class="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-md text-[13px] font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer">
-                    <span class="material-symbols-outlined text-[16px] animate-none" id="iconCheckUpdate">sync</span>
-                    <span id="lblBtnCheckUpdate" data-i18n="btnCheckUpdate">检查更新</span>
-                </button>
+                <!-- Toggle Switch -->
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="chkEnableSystemLog" class="sr-only peer">
+                    <div class="w-11 h-6 bg-slate-200 dark:bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                </label>
             </div>
+        </div>
+
+        <!-- 系统启动设置卡片 -->
+        <div class="glass-card rounded-xl p-6 flex flex-col gap-4">
+            <h2 class="text-[15px] font-bold text-on-surface dark:text-white flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary text-[20px]">settings_power</span>
+                <span data-i18n="startupSettingTitle">系统启动设置</span>
+            </h2>
+            <p class="text-xs text-outline leading-relaxed" data-i18n="startupSettingTip">
+                配置开机自启动与启动时的显示方式。
+            </p>
             
-            <!-- 更新状态/进度区 (默认隐藏) -->
-            <div id="updateStatusContainer" class="hidden text-[12px] p-4 rounded-xl border border-outline-variant/20 bg-slate-50/50 dark:bg-white/5 flex flex-col gap-2 mt-2">
-                <div class="font-bold flex items-center gap-1.5 text-on-surface dark:text-white">
-                    <span class="material-symbols-outlined text-[16px] text-primary" id="updateStatusIcon">info</span>
-                    <span id="updateStatusTitle">检查更新状态</span>
+            <div class="flex items-center justify-between border-t border-outline-variant/20 pt-4 mt-2">
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-[13px] font-bold text-on-surface dark:text-white" data-i18n="enableAutoStartLabel">开机自启动</span>
+                    <span class="text-[11px] text-outline text-wrap max-w-[80%]" data-i18n="enableAutoStartDesc">在系统启动时自动运行 Antigravity Proxy。</span>
                 </div>
-                <div id="updateStatusMsg" class="text-[12px] text-outline font-medium whitespace-pre-wrap leading-relaxed break-all"></div>
-                <!-- 进度条 -->
-                <div id="updateProgressBarContainer" class="hidden w-full bg-slate-200/50 dark:bg-white/10 rounded-full h-2 mt-1">
-                    <div id="updateProgressBarFill" class="bg-primary h-2 rounded-full transition-all duration-200" style="width: 0%"></div>
+                <!-- Toggle Switch -->
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="chkEnableAutoStart" class="sr-only peer">
+                    <div class="w-11 h-6 bg-slate-200 dark:bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                </label>
+            </div>
+
+            <div class="flex items-center justify-between border-t border-outline-variant/20 pt-4">
+                <div class="flex flex-col gap-0.5">
+                    <span class="text-[13px] font-bold text-on-surface dark:text-white" data-i18n="enableSilentStartLabel">静默启动</span>
+                    <span class="text-[11px] text-outline text-wrap max-w-[80%]" data-i18n="enableSilentStartDesc">自启动时保持在后台运行，只在托盘显示，不打开主界面。</span>
                 </div>
-                <!-- 更新按钮动作组 -->
-                <div id="updateActionsGroup" class="hidden flex gap-2.5 mt-2">
-                    <button id="btnUpdateActionConfirm" class="px-3 py-1.5 bg-primary text-white hover:bg-primary/90 rounded-md text-[12px] font-bold transition-all shadow-sm cursor-pointer"></button>
-                    <button id="btnUpdateActionCancel" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-on-surface dark:text-white rounded-md text-[12px] font-medium transition-all border border-outline-variant/30 cursor-pointer"></button>
+                <!-- Toggle Switch -->
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="chkEnableSilentStart" class="sr-only peer">
+                    <div class="w-11 h-6 bg-slate-200 dark:bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                </label>
+            </div>
+        </div>
+        </div>
+        <!-- End settings-panel-general -->
+
+        <!-- 关于面板 -->
+        <div id="settings-panel-about" class="hidden flex-col gap-6 w-full">
+            <div class="glass-card rounded-xl p-8 flex flex-col items-center text-center gap-4 max-w-2xl mx-auto w-full">
+                <!-- App Logo -->
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-primary to-blue-400 flex items-center justify-center shadow-lg shadow-primary/20">
+                    <span class="material-symbols-outlined text-white text-[36px] font-bold fill-1" style="font-variation-settings: 'FILL' 1;">hexagon</span>
+                </div>
+                <h2 class="text-xl font-bold text-on-surface dark:text-white">Antigravity Proxy</h2>
+                
+                <!-- Pill Buttons Row -->
+                <div class="flex flex-wrap justify-center gap-2 mt-1">
+                    <span id="lblCurrentVersion" class="px-2.5 py-0.5 bg-slate-100 dark:bg-white/5 border border-outline-variant/30 text-outline rounded-full text-[11px] font-semibold font-data-mono flex items-center">v1.0.1</span>
+                    <button id="btnCheckUpdate" class="px-2.5 py-0.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer">
+                        <span class="material-symbols-outlined text-[12px] animate-none" id="iconCheckUpdate">sync</span>
+                        <span id="lblBtnCheckUpdate" data-i18n="btnCheckUpdate">检查更新</span>
+                    </button>
+                    <button id="btnAboutChangelog" class="px-2.5 py-0.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-on-surface dark:text-white border border-outline-variant/30 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all cursor-pointer">
+                        <span class="material-symbols-outlined text-[12px]">description</span>
+                        <span>更新记录</span>
+                    </button>
+                </div>
+                
+                <p class="text-[12px] text-outline max-w-md mt-1" data-i18n="aboutDesc">基于大模型的智能代理与多账号调度流量管理解决方案</p>
+                
+                <!-- 四宫格卡片布局 -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full mt-4 border-t border-outline-variant/20 pt-6">
+                    <!-- Card 1: 主作者 -->
+                    <div class="glass-card hover:border-primary/30 hover:bg-primary/5 transition-all duration-300 rounded-xl p-4 flex flex-col items-center justify-center text-center gap-1.5 border border-outline-variant/20">
+                        <span class="material-symbols-outlined text-primary/80 text-[20px]">person</span>
+                        <span class="text-[12px] font-bold text-on-surface dark:text-white">主作者</span>
+                        <span class="text-[11px] text-outline font-data-mono">weilimao</span>
+                    </div>
+                    
+                    <!-- Card 2: 开源仓库 -->
+                    <button id="btnAboutRepo" class="glass-card hover:border-primary/30 hover:bg-primary/5 transition-all duration-300 rounded-xl p-4 flex flex-col items-center justify-center text-center gap-1.5 border border-outline-variant/20 cursor-pointer">
+                        <svg class="w-5 h-5 text-primary/80 fill-current" viewBox="0 0 24 24">
+                            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                        </svg>
+                        <span class="text-[12px] font-bold text-on-surface dark:text-white">开源仓库</span>
+                        <span class="text-[11px] text-outline font-data-mono">antigravityProxy</span>
+                    </button>
+
+                    <!-- Card 3: 赞助支持 -->
+                    <div class="glass-card hover:border-primary/30 hover:bg-primary/5 transition-all duration-300 rounded-xl p-4 flex flex-col items-center justify-center text-center gap-1.5 border border-outline-variant/20">
+                        <span class="material-symbols-outlined text-primary/80 text-[20px]">favorite</span>
+                        <span class="text-[12px] font-bold text-on-surface dark:text-white">赞助支持</span>
+                        <span class="text-[11px] text-outline">支持项目持续开发</span>
+                    </div>
+
+                    <!-- Card 4: 意见反馈 -->
+                    <button id="btnAboutFeedback" class="glass-card hover:border-primary/30 hover:bg-primary/5 transition-all duration-300 rounded-xl p-4 flex flex-col items-center justify-center text-center gap-1.5 border border-outline-variant/20 cursor-pointer">
+                        <span class="material-symbols-outlined text-primary/80 text-[20px]">sms</span>
+                        <span class="text-[12px] font-bold text-on-surface dark:text-white">意见反馈</span>
+                        <span class="text-[11px] text-outline">报告问题或提交建议</span>
+                    </button>
+                </div>
+                
+                <!-- 更新状态/进度区 -->
+                <div id="updateStatusContainer" class="hidden text-[12px] p-4 rounded-xl border border-outline-variant/20 bg-slate-50/50 dark:bg-white/5 flex flex-col gap-2 mt-4 w-full text-left">
+                    <div class="font-bold flex items-center gap-1.5 text-on-surface dark:text-white">
+                        <span class="material-symbols-outlined text-[16px] text-primary" id="updateStatusIcon">info</span>
+                        <span id="updateStatusTitle">检查更新状态</span>
+                    </div>
+                    <div id="updateStatusMsg" class="text-[12px] text-outline font-medium whitespace-pre-wrap leading-relaxed break-all"></div>
+                    <!-- 进度条 -->
+                    <div id="updateProgressBarContainer" class="hidden w-full bg-slate-200/50 dark:bg-white/10 rounded-full h-2 mt-1">
+                        <div id="updateProgressBarFill" class="bg-primary h-2 rounded-full transition-all duration-200" style="width: 0%"></div>
+                    </div>
+                    <!-- 更新按钮动作组 -->
+                    <div id="updateActionsGroup" class="hidden flex gap-2.5 mt-2">
+                        <button id="btnUpdateActionConfirm" class="px-3 py-1.5 bg-primary text-white hover:bg-primary/90 rounded-md text-[12px] font-bold transition-all shadow-sm cursor-pointer"></button>
+                        <button id="btnUpdateActionCancel" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-on-surface dark:text-white rounded-md text-[12px] font-medium transition-all border border-outline-variant/30 cursor-pointer"></button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -867,5 +1016,6 @@
     </div>
 
     <script src="./src/ui/dashboard.js"></script>
+    <script src="./src/ui/settingsController.js"></script>
 </body>
 </html>

@@ -73,20 +73,54 @@ class SessionRouter {
      * @param {import('http').IncomingMessage} req
      * @returns {string} sessionKey（永不为空）
      */
-    extractSessionKey(req) {
+    /**
+     * 从拦截的请求中提取稳定的会话标识符。
+     * 优先级：原始 Auth Token > socket 地址。
+     * 同时支持从请求体中提取 Conversation UUID 以支持会话级精细分流。
+     *
+     * @param {import('http').IncomingMessage} req
+     * @param {Buffer} [reqBody] - 请求体数据
+     * @returns {string} sessionKey（永不为空）
+     */
+    extractSessionKey(req, reqBody) {
+        let baseKey = '';
         // 优先级 1：原始 IDE 的 Authorization Bearer Token
-        // 同一 IDE 实例在整个会话期间 Token 固定不变，是最稳定的标识
         const authHeader = req.headers['authorization'] || '';
         if (authHeader.startsWith('Bearer ') && authHeader.length > 10) {
             const token = authHeader.substring(7);
-            // 取 SHA256 哈希前 16 字符，避免在日志/文件中暴露明文 Token
-            return 'auth:' + crypto.createHash('sha256').update(token).digest('hex').substring(0, 16);
+            baseKey = 'auth:' + crypto.createHash('sha256').update(token).digest('hex').substring(0, 16);
+        } else {
+            // 优先级 2：客户端 socket 地址
+            const remoteAddr = (req.socket && req.socket.remoteAddress) || 'unknown';
+            const remotePort = (req.socket && req.socket.remotePort) || '0';
+            baseKey = 'sock:' + remoteAddr + ':' + remotePort;
         }
 
-        // 优先级 2：客户端 socket 地址（同一 TCP 连接 = 同一 IDE 进程）
-        const remoteAddr = (req.socket && req.socket.remoteAddress) || 'unknown';
-        const remotePort = (req.socket && req.socket.remotePort) || '0';
-        return 'sock:' + remoteAddr + ':' + remotePort;
+        // 尝试从请求体中提取聊天会话 ID (Conversation UUID)
+        if (reqBody && reqBody.length > 0) {
+            try {
+                const bodyStr = reqBody.toString('utf8');
+                // 方式 1：使用高效的正则匹配提取 requestId 中的会话 ID
+                // requestId 格式通常为: agent/81a44cce-9a94-451a-8764-0ad306a6b978/...
+                const reqIdMatch = bodyStr.match(/"requestId"\s*:\s*"\w+\/([a-fA-F0-9-]+)/);
+                if (reqIdMatch && reqIdMatch[1]) {
+                    return `${baseKey}:${reqIdMatch[1].substring(0, 8)}`;
+                }
+
+                // 方式 2：作为后备，解析 JSON 后匹配分割
+                const bodyJson = JSON.parse(bodyStr);
+                if (bodyJson.requestId && typeof bodyJson.requestId === 'string') {
+                    const parts = bodyJson.requestId.split('/');
+                    if (parts.length > 1) {
+                        return `${baseKey}:${parts[1].substring(0, 8)}`;
+                    }
+                }
+            } catch (e) {
+                // 容错：即使解析异常也优雅回退到 baseKey
+            }
+        }
+
+        return baseKey;
     }
 
     /**

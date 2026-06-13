@@ -66,12 +66,26 @@ function fetchLatestRelease(owner, repo) {
 function findPlatformAsset(assets) {
     if (!assets || !Array.isArray(assets)) return null;
     const platform = process.platform;
+    const arch = process.arch;
     if (platform === 'win32') {
         // Windows: Find .exe, exclude .blockmap
         return assets.find(asset => {
             const name = asset.name.toLowerCase();
             return name.endsWith('.exe') && !name.endsWith('.blockmap');
         });
+    } else if (platform === 'darwin') {
+        // macOS: 优先寻找带有当前架构的 .dmg，其次是通用 .dmg，然后是 .zip
+        const dmgAsset = assets.find(asset => {
+            const name = asset.name.toLowerCase();
+            return name.endsWith('.dmg') && name.includes(arch);
+        }) || assets.find(asset => asset.name.toLowerCase().endsWith('.dmg'));
+
+        if (dmgAsset) return dmgAsset;
+
+        return assets.find(asset => {
+            const name = asset.name.toLowerCase();
+            return name.endsWith('.zip') && name.includes(arch);
+        }) || assets.find(asset => asset.name.toLowerCase().endsWith('.zip'));
     }
     return null;
 }
@@ -241,8 +255,22 @@ class UpdateManager extends EventEmitter {
                         process.exit(0);
                     }
                 }, 500);
+            } else if (platform === 'darwin') {
+                // macOS: 调用 system 默认方式挂载/解压安装包，并安全退出原进程
+                const { shell } = require('electron');
+                shell.openPath(filePath).then(() => {
+                    setTimeout(() => {
+                        if (this.appQuitCallback) {
+                            this.appQuitCallback();
+                        } else {
+                            process.exit(0);
+                        }
+                    }, 500);
+                }).catch(err => {
+                    this.logger.error('[Update] macOS failed to open installer:', err.message);
+                });
             } else {
-                this.logger.error('[Update] Auto install only supported on Windows win32.');
+                this.logger.error('[Update] Auto install only supported on Windows and macOS.');
             }
         } catch (err) {
             this.logger.error('[Update] Failed to execute installer:', err.message);

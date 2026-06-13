@@ -4,7 +4,7 @@
 
 const translations = {
     zh: {
-        title: "Antigravity Proxy 控制台",
+        title: "控制台",
         interceptMode: "拦截模式:",
         statusOn: "开启",
         statusOff: "关闭",
@@ -28,6 +28,7 @@ const translations = {
         savedCost: "节省成本:",
         totalCost: "总成本:",
         summaryTotalCostToday: "今日总成本:",
+        summaryTotalCost24h: "近24小时总成本:",
         summaryTotalCost3d: "近三天总成本:",
         summaryTotalCost7d: "七天总成本:",
         summaryTotalCost30d: "30天总成本:",
@@ -95,9 +96,19 @@ const translations = {
         downloadingUpdate: "正在下载更新包...",
         downloadComplete: "下载完成，重启后生效",
         updateFailed: "检查更新或下载失败，请检查网络",
+        logSettingTitle: "控制台日志设置",
+        logSettingTip: "启用或禁用底部控制台系统日志的实时输出。禁用此功能可减少日志输出和渲染，从而显著节省内存并提升系统运行性能。",
+        enableLogLabel: "启用控制台系统日志",
+        enableLogDesc: "关闭后将不再输出和记录新的系统日志，并隐藏底部的系统日志抽屉。",
+        startupSettingTitle: "系统启动设置",
+        startupSettingTip: "配置开机自启动与启动时的显示方式。",
+        enableAutoStartLabel: "开机自启动",
+        enableAutoStartDesc: "在系统启动时自动运行 Antigravity Proxy。",
+        enableSilentStartLabel: "静默启动",
+        enableSilentStartDesc: "自启动时保持在后台运行，只在托盘显示，不打开主界面。",
     },
     en: {
-        title: "Antigravity Proxy Console",
+        title: "Console",
         interceptMode: "Intercept Mode:",
         statusOn: "ON",
         statusOff: "OFF",
@@ -121,6 +132,7 @@ const translations = {
         savedCost: "Saved Cost:",
         totalCost: "Total Cost:",
         summaryTotalCostToday: "Today's Total Cost:",
+        summaryTotalCost24h: "24-Hour Total Cost:",
         summaryTotalCost3d: "3-Day Total Cost:",
         summaryTotalCost7d: "7-Day Total Cost:",
         summaryTotalCost30d: "30-Day Total Cost:",
@@ -188,6 +200,16 @@ const translations = {
         downloadingUpdate: "Downloading update...",
         downloadComplete: "Download complete. Restart to apply.",
         updateFailed: "Check or download failed. Please verify network.",
+        logSettingTitle: "Console Log Settings",
+        logSettingTip: "Enable or disable live log output in the bottom system console. Disabling this reduces log output and rendering, saving memory and improving performance.",
+        enableLogLabel: "Enable Console System Log",
+        enableLogDesc: "When disabled, new system logs will not be recorded or outputted, and the bottom log drawer will be hidden.",
+        startupSettingTitle: "Startup Settings",
+        startupSettingTip: "Configure whether the application starts automatically on boot and how it is displayed when starting.",
+        enableAutoStartLabel: "Start on Boot",
+        enableAutoStartDesc: "Automatically run Antigravity Proxy when the system starts.",
+        enableSilentStartLabel: "Silent Start",
+        enableSilentStartDesc: "Run in the background (tray only) without showing the main window on startup.",
     }
 };
 

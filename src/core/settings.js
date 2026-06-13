@@ -14,6 +14,13 @@ class SettingsManager {
         this.defaultUserDataPath = '';
         this.activeDataDirectory = '';
         this.customDataDirectory = null;
+        this.config = {
+            dataDirectory: null,
+            enableSystemLog: false,
+            isInterceptMode: false,
+            autoStart: false,
+            silentStart: false
+        };
     }
 
     /**
@@ -38,10 +45,18 @@ class SettingsManager {
         try {
             if (fs.existsSync(configPath)) {
                 const content = fs.readFileSync(configPath, 'utf8');
-                const config = JSON.parse(content);
-                if (config.dataDirectory && fs.existsSync(config.dataDirectory)) {
-                    this.customDataDirectory = config.dataDirectory;
-                    this.activeDataDirectory = config.dataDirectory;
+                const parsed = JSON.parse(content);
+                if (parsed) {
+                    this.config.dataDirectory = parsed.dataDirectory || null;
+                    this.config.enableSystemLog = parsed.enableSystemLog === true;
+                    this.config.isInterceptMode = parsed.isInterceptMode === true;
+                    this.config.autoStart = parsed.autoStart === true;
+                    this.config.silentStart = parsed.silentStart === true;
+                }
+                
+                if (this.config.dataDirectory && fs.existsSync(this.config.dataDirectory)) {
+                    this.customDataDirectory = this.config.dataDirectory;
+                    this.activeDataDirectory = this.config.dataDirectory;
                     console.log(`[Settings] Using custom data directory: ${this.activeDataDirectory}`);
                     return;
                 }
@@ -73,6 +88,74 @@ class SettingsManager {
     }
 
     /**
+     * Check if system log is enabled
+     * @returns {boolean}
+     */
+    getEnableSystemLog() {
+        return this.config.enableSystemLog;
+    }
+
+    /**
+     * Set whether system log is enabled and save configuration
+     * @param {boolean} enable 
+     */
+    setEnableSystemLog(enable) {
+        this.config.enableSystemLog = !!enable;
+        this.saveConfig(this.customDataDirectory);
+    }
+
+    /**
+     * Check if intercept mode is enabled by default
+     * @returns {boolean}
+     */
+    getIsInterceptMode() {
+        return this.config.isInterceptMode;
+    }
+
+    /**
+     * Set intercept mode state
+     * @param {boolean} mode 
+     */
+    setIsInterceptMode(mode) {
+        this.config.isInterceptMode = !!mode;
+        this.saveConfig(this.customDataDirectory);
+    }
+
+    /**
+     * Check if auto start is enabled
+     * @returns {boolean}
+     */
+    getAutoStart() {
+        return this.config.autoStart;
+    }
+
+    /**
+     * Set auto start state
+     * @param {boolean} enabled 
+     */
+    setAutoStart(enabled) {
+        this.config.autoStart = !!enabled;
+        this.saveConfig(this.customDataDirectory);
+    }
+
+    /**
+     * Check if silent start is enabled
+     * @returns {boolean}
+     */
+    getSilentStart() {
+        return this.config.silentStart;
+    }
+
+    /**
+     * Set silent start state
+     * @param {boolean} enabled 
+     */
+    setSilentStart(enabled) {
+        this.config.silentStart = !!enabled;
+        this.saveConfig(this.customDataDirectory);
+    }
+
+    /**
      * Save the config.json into default userData directory
      * @param {string|null} customPath 
      */
@@ -81,11 +164,9 @@ class SettingsManager {
 
         const configPath = path.join(this.defaultUserDataPath, CONFIG_FILE_NAME);
         try {
-            const configData = {
-                dataDirectory: customPath || null
-            };
-            fs.writeFileSync(configPath, JSON.stringify(configData, null, 2), 'utf8');
-            console.log(`[Settings] Config saved. customPath: ${customPath}`);
+            this.config.dataDirectory = customPath || null;
+            fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2), 'utf8');
+            console.log(`[Settings] Config saved:`, this.config);
         } catch (err) {
             console.error('[Settings] Failed to write config.json:', err);
         }
