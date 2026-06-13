@@ -1,0 +1,32 @@
+{
+  "name": "antigravity-proxy-desktop",
+  "version": "1.0.0",
+  "description": "Antigravity Proxy Desktop Client",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis"
+  },
+  "author": "weilimao",
+  "repository": "github:weilimao/antigravity-proxy",
+  "build": {
+    "appId": "com.weilimao.antigravityproxy",
+    "win": {
+      "target": "nsis",
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "devDependencies": {
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "asar": "^3.2.0",
+    "http-mitm-proxy": "^1.1.0"
+  }
+}

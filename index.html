@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Proxy Desktop</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #header {
+            padding: 15px 20px;
+            background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        #logs {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 13px;
+        }
+        .log-entry { margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        .warn { color: #cca700; }
+        .error { color: #f48771; }
+        .info { color: #75beff; }
+
+        /* Switch toggle CSS */
+        .switch { position: relative; display: inline-block; width: 40px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #555; transition: .4s; border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 16px; width: 16px;
+            left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #0e639c; }
+        input:checked + .slider:before { transform: translateX(16px); }
+
+        #statusText { font-weight: bold; font-size: 16px; }
+        #stats {
+            padding: 15px 20px;
+            background: #1e1e1e;
+            border-bottom: 1px solid #3c3c3c;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-size: 13px;
+        }
+        .stat-box {
+            background: #2d2d30;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 10px 15px;
+            min-width: 120px;
+        }
+        .stat-title { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 5px; }
+        .stat-value { font-size: 18px; font-weight: bold; color: #d4d4d4; }
+        .stat-sub { font-size: 11px; color: #9cdcfe; margin-top: 5px; }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .header-right {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .badge-trusted {
+            background-color: rgba(76, 175, 80, 0.15);
+            color: #4caf50;
+            border: 1px solid rgba(76, 175, 80, 0.3);
+        }
+        .badge-untrusted {
+            background-color: rgba(244, 67, 54, 0.15);
+            color: #f44336;
+            border: 1px solid rgba(244, 67, 54, 0.3);
+        }
+        .badge-checking {
+            background-color: rgba(255, 193, 7, 0.15);
+            color: #ffc107;
+            border: 1px solid rgba(255, 193, 7, 0.3);
+        }
+        .btn {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.2s, opacity 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover:not(:disabled) {
+            opacity: 0.9;
+        }
+        .btn:active:not(:disabled) {
+            opacity: 0.8;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-primary {
+            background-color: #0e639c;
+            color: white;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background-color: #1177bb;
+        }
+        .btn-secondary {
+            background-color: #3e3e42;
+            color: #cccccc;
+            border: 1px solid #555555;
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background-color: #4e4e52;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <div class="header-left">
+            <span style="font-size: 16px; font-weight: bold;">Intercept Mode:</span>
+            <label class="switch">
+                <input type="checkbox" id="proxyToggle">
+                <span class="slider"></span>
+            </label>
+            <span id="statusText" style="color: #f48771;">OFF</span>
+        </div>
+        <div class="header-right">
+            <span style="font-size: 14px; color: #888;">CA Cert:</span>
+            <span id="certStatusBadge" class="badge badge-checking">Checking...</span>
+            <button id="btnInstallCert" class="btn btn-primary" disabled>Install CA</button>
+            <button id="btnUninstallCert" class="btn btn-secondary" disabled>Uninstall CA</button>
+        </div>
+    </div>
+    <div id="stats">
+        <div class="stat-box">
+            <div class="stat-title">Total Requests</div>
+            <div class="stat-value" id="valReqs">0</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-title">Total Prompt Tokens</div>
+            <div class="stat-value" id="valIn">0</div>
+            <div class="stat-sub">Cache Hit Rate: <span id="valHitRate">0%</span></div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-title">Total Output Tokens</div>
+            <div class="stat-value" id="valOut">0</div>
+        </div>
+        <div id="modelsBreakdown" style="width: 100%; display: flex; gap: 10px; margin-top: 5px;"></div>
+    </div>
+    <div id="logs"></div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        const logsContainer = document.getElementById('logs');
+        const toggleBtn = document.getElementById('proxyToggle');
+        const statusText = document.getElementById('statusText');
+
+        // Stats UI elements
+        const valReqs = document.getElementById('valReqs');
+        const valIn = document.getElementById('valIn');
+        const valOut = document.getElementById('valOut');
+        const valHitRate = document.getElementById('valHitRate');
+        const modelsBreakdown = document.getElementById('modelsBreakdown');
+
+        toggleBtn.addEventListener('change', (e) => {
+            const isInterceptMode = e.target.checked;
+            statusText.textContent = isInterceptMode ? 'ON' : 'OFF';
+            statusText.style.color = isInterceptMode ? '#89d185' : '#f48771';
+            ipcRenderer.send('toggle', isInterceptMode);
+        });
+
+        ipcRenderer.on('state', (event, isInterceptMode) => {
+            toggleBtn.checked = isInterceptMode;
+            statusText.textContent = isInterceptMode ? 'ON' : 'OFF';
+            statusText.style.color = isInterceptMode ? '#89d185' : '#f48771';
+        });
+
+        ipcRenderer.on('stats', (event, stats) => {
+            if (!stats) return;
+            valReqs.textContent = stats.totalRequests;
+            valIn.textContent = stats.totalInputTokens.toLocaleString();
+            valOut.textContent = stats.totalOutputTokens.toLocaleString();
+
+            const hitRate = stats.totalInputTokens > 0
+                ? (stats.totalCachedTokens / (stats.totalInputTokens + stats.totalCachedTokens) * 100).toFixed(1)
+                : 0;
+            valHitRate.textContent = hitRate + '%';
+
+            modelsBreakdown.innerHTML = '';
+            for (const [model, data] of Object.entries(stats.models)) {
+                if (model === 'unknown' && data.reqs === 0) continue;
+                const mDiv = document.createElement('div');
+                mDiv.style.fontSize = '11px';
+                mDiv.style.color = '#ce9178';
+                mDiv.style.background = '#1e1e1e';
+                mDiv.style.padding = '4px 8px';
+                mDiv.style.borderRadius = '4px';
+                mDiv.textContent = `${model}: ${data.reqs} reqs | In: ${data.inTokens} | Out: ${data.outTokens}`;
+                modelsBreakdown.appendChild(mDiv);
+            }
+        });
+
+        ipcRenderer.on('log', (event, log) => {
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            if (log.includes('⚠️')) div.classList.add('warn');
+            if (log.includes('❌')) div.classList.add('error');
+            if (log.includes('✅') || log.includes('🚀')) div.classList.add('info');
+            div.textContent = log;
+            logsContainer.appendChild(div);
+
+            while (logsContainer.children.length > 200) {
+                logsContainer.removeChild(logsContainer.firstChild);
+            }
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        });
+
+        const btnInstallCert = document.getElementById('btnInstallCert');
+        const btnUninstallCert = document.getElementById('btnUninstallCert');
+        const certStatusBadge = document.getElementById('certStatusBadge');
+
+        function updateCertUI(isInstalled, isProcessing = false) {
+            if (isProcessing) {
+                certStatusBadge.textContent = '⏳ Processing...';
+                certStatusBadge.className = 'badge badge-checking';
+                btnInstallCert.disabled = true;
+                btnUninstallCert.disabled = true;
+                return;
+            }
+
+            if (isInstalled) {
+                certStatusBadge.textContent = '🔒 Trusted';
+                certStatusBadge.className = 'badge badge-trusted';
+                btnInstallCert.disabled = true;
+                btnUninstallCert.disabled = false;
+            } else {
+                certStatusBadge.textContent = '⚠️ Untrusted';
+                certStatusBadge.className = 'badge badge-untrusted';
+                btnInstallCert.disabled = false;
+                btnUninstallCert.disabled = true;
+            }
+        }
+
+        btnInstallCert.addEventListener('click', () => {
+            updateCertUI(false, true);
+            ipcRenderer.send('cert-install');
+        });
+
+        btnUninstallCert.addEventListener('click', () => {
+            updateCertUI(false, true);
+            ipcRenderer.send('cert-uninstall');
+        });
+
+        ipcRenderer.on('cert-status-res', (event, isInstalled) => {
+            updateCertUI(isInstalled);
+        });
+
+        // Query initial state
+        ipcRenderer.send('get-state');
+
+        // Periodically poll certificate status (every 5s)
+        setInterval(() => {
+            ipcRenderer.send('cert-status');
+        }, 5000);
+    </script>
+</body>
+</html>
