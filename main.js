@@ -504,7 +504,7 @@ function createWindow() {
     });
 
     mainWindow.loadFile('index.html');
-    mainWindow.webContents.openDevTools();
+    // mainWindow.webContents.openDevTools(); // 已禁用：不默认打开开发工具
 
     mainWindow.on('close', (event) => {
         if (!isQuitting) {

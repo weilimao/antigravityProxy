@@ -570,8 +570,17 @@
         <div class="glass-card rounded-xl flex flex-col flex-1 min-h-[300px]">
             <div class="p-4 border-b border-outline-variant/30 flex justify-between items-center bg-slate-50/50 dark:bg-white/5 rounded-t-xl">
                 <span class="text-[13px] font-bold text-outline dark:text-outline-variant">已添加的账号</span>
-                <span class="text-[12px] font-medium text-primary dark:text-primary-fixed-dim bg-primary/10 px-2 py-0.5 rounded-md" id="accountCountBadge">共 0 个账号</span>
+                <div class="flex items-center gap-2">
+                    <span class="text-[12px] font-medium text-primary dark:text-primary-fixed-dim bg-primary/10 px-2 py-0.5 rounded-md" id="accountCountBadge">共 0 个账号</span>
+                    <button id="btnRefreshAllQuota"
+                        title="刷新所有账号配额"
+                        class="flex items-center gap-1 text-[11px] font-medium text-outline dark:text-outline-variant hover:text-primary dark:hover:text-primary-fixed-dim bg-outline-variant/10 hover:bg-primary/10 border border-outline-variant/20 hover:border-primary/30 px-2.5 py-1 rounded-lg transition-all duration-200 select-none">
+                        <span class="material-symbols-outlined text-[14px]" id="btnRefreshAllIcon">sync</span>
+                        <span>刷新配额</span>
+                    </button>
+                </div>
             </div>
+
             <div class="flex-grow overflow-y-auto p-4">
                 <div id="accountsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <!-- 动态生成的账号卡片 -->

@@ -1268,6 +1268,51 @@ const poolModeToggle = document.getElementById('poolModeToggle');
 const accountsList = document.getElementById('accountsList');
 const accountsEmptyState = document.getElementById('accountsEmptyState');
 const accountCountBadge = document.getElementById('accountCountBadge');
+const btnRefreshAllQuota = document.getElementById('btnRefreshAllQuota');
+const btnRefreshAllIcon = document.getElementById('btnRefreshAllIcon');
+
+let isRefreshingAll = false;
+
+/**
+ * 一键刷新所有账号配额
+ * 依次遍历所有账号卡片中的刷新按钮并触发刷新
+ */
+async function refreshAllQuotas() {
+    if (isRefreshingAll) return;
+    isRefreshingAll = true;
+
+    // 旋转图标动画
+    btnRefreshAllIcon.classList.add('animate-spin');
+    btnRefreshAllQuota.disabled = true;
+    btnRefreshAllQuota.classList.add('opacity-60', 'cursor-not-allowed');
+
+    try {
+        // 取得所有账号卡片内的刷新按钮（每张卡片各自的刷新图标按钮）
+        const cardRefreshBtns = accountsList.querySelectorAll('[data-quota-refresh-btn]');
+        if (cardRefreshBtns.length === 0) {
+            // 如果卡片还未渲染，直接清除 quotaCache 并强制重绘
+            quotaCache = {};
+            const accounts = await ipcRenderer.invoke('accounts:list');
+            renderAccounts(accounts);
+        } else {
+            // 串行逐一点击每张卡片的刷新按钮（避免同时发起大量请求）
+            for (const btn of cardRefreshBtns) {
+                btn.click();
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+    } finally {
+        // 延迟一点恢复，让用户能看到旋转效果
+        await new Promise(r => setTimeout(r, 800));
+        btnRefreshAllIcon.classList.remove('animate-spin');
+        btnRefreshAllQuota.disabled = false;
+        btnRefreshAllQuota.classList.remove('opacity-60', 'cursor-not-allowed');
+        isRefreshingAll = false;
+    }
+}
+
+btnRefreshAllQuota.addEventListener('click', refreshAllQuotas);
+
 
 let isLoadingAuth = false;
 
@@ -1523,6 +1568,7 @@ function renderAccounts(accounts) {
         const refreshBtn = document.createElement('button');
         refreshBtn.className = 'text-outline hover:text-primary transition-colors z-10';
         refreshBtn.title = '刷新配额';
+        refreshBtn.setAttribute('data-quota-refresh-btn', '');
         refreshBtn.innerHTML = '<span class="material-symbols-outlined text-[14px]">refresh</span>';
 
         quotaHeader.appendChild(refreshBtn);
