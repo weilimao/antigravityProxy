@@ -611,14 +611,24 @@
 
     <!-- 账号池视图 -->
     <div id="view-accounts" class="hidden flex-col gap-6 w-full">
+        <!-- 通道分类切换 Tab -->
+        <div class="flex gap-1 bg-slate-100 dark:bg-white/5 p-1 rounded-lg text-[12px] w-fit">
+            <button id="btnChannelAntigravity" type="button" class="px-4 py-1.5 rounded-md font-bold cursor-pointer transition-all duration-200 bg-white dark:bg-[#1a1f30] text-primary dark:text-primary-fixed-dim shadow-sm">
+                Antigravity 官方账号
+            </button>
+            <button id="btnChannelProject" type="button" class="px-4 py-1.5 rounded-md font-medium cursor-pointer transition-all duration-200 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+                谷歌云项目 API
+            </button>
+        </div>
+
         <div class="flex justify-between items-end">
             <div>
                 <h1 class="text-2xl font-bold text-on-surface dark:text-white">账号池管理</h1>
                 <p class="text-xs text-outline dark:text-outline-variant">统一管理多个 Google OAuth 账号，开启负载均衡可自动进行请求分发</p>
             </div>
             <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2 bg-slate-50/50 dark:bg-white/5 px-3 py-1.5 rounded-lg border border-outline-variant/30">
-                    <span class="text-[13px] font-medium text-on-surface dark:text-white">账号负载均衡</span>
+                <div id="poolModeContainer" class="flex items-center gap-2 bg-slate-50/50 dark:bg-white/5 px-3 py-1.5 rounded-lg border border-outline-variant/30">
+                    <span class="text-[13px] font-medium text-on-surface dark:text-white" id="lblPoolMode">账号负载均衡</span>
                     <div class="relative inline-block w-10 mr-1 align-middle select-none transition duration-200 ease-in">
                         <input class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out" id="poolModeToggle" type="checkbox"/>
                         <label class="toggle-label block overflow-hidden h-5 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer" for="poolModeToggle"></label>
@@ -632,14 +642,14 @@
                     </button>
                     <!-- 下拉菜单 -->
                     <div id="addAccountDropdown" class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#1a1f30] border border-outline-variant/30 rounded-xl shadow-xl py-2 hidden z-50">
-                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors flex items-center gap-2" onclick="startLogin('antigravity')">
+                        <button id="btnAntigravityLogin" class="w-full text-left px-4 py-2 text-[13px] text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-white/5 transition-colors flex items-center gap-2" onclick="startLogin('antigravity')">
                             <span class="material-symbols-outlined text-primary text-[16px]">extension</span>
                             <div>
                                 <div class="font-bold">Antigravity (推荐)</div>
                                 <div class="text-[10px] text-outline">使用官方插件凭证授权</div>
                             </div>
                         </button>
-                        <button class="w-full text-left px-4 py-2 text-[13px] text-on-surface/40 dark:text-white/45 cursor-not-allowed flex items-center gap-2 border-t border-outline-variant/10 mt-1 pt-3" disabled title="已暂时禁用 Gemini CLI 登录">
+                        <button id="btnGeminiCliLogin" class="w-full text-left px-4 py-2 text-[13px] text-on-surface/40 dark:text-white/45 cursor-not-allowed flex items-center gap-2 border-t border-outline-variant/10 mt-1 pt-3" disabled title="已暂时禁用 Gemini CLI 登录">
                             <span class="material-symbols-outlined text-outline/40 text-[16px]">terminal</span>
                             <div>
                                 <div class="font-bold">Gemini CLI (已禁用)</div>

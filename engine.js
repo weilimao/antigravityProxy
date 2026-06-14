@@ -307,17 +307,55 @@ class ProxyEngine extends EventEmitter {
                             }
                         }
                         
-                        // Strip 'project' ID from payload to prevent 429 Quota Exhaustion on IDE's default project
+                        // Strip 'project' ID or inject configured project ID based on account channel
                         if (reqBody.length > 0 && customHeaders['content-type'] && customHeaders['content-type'].includes('json')) {
                             try {
                                 const bodyJson = JSON.parse(reqBody.toString('utf8'));
-                                if (bodyJson.project) {
-                                    delete bodyJson.project;
-                                    const newBodyStr = JSON.stringify(bodyJson);
-                                    finalReqBody = Buffer.from(newBodyStr, 'utf8');
-                                    customHeaders['content-length'] = finalReqBody.length;
-                                    if (attemptIndex === 0) {
-                                        this.emit('log', `🛡️ Stripped 'project' ID from payload to avoid IDE default project quota 429.`);
+                                if (bodyJson && typeof bodyJson === 'object' && !Array.isArray(bodyJson)) {
+                                    // Determine the target project to inject
+                                    let targetProject = null;
+                                    if (poolAccount) {
+                                        if (poolAccount.provider !== 'antigravity') {
+                                            // For Project API accounts, inject their configured project ID
+                                            targetProject = poolAccount.projectId || poolAccount.project_id || null;
+                                        } else {
+                                            // For 'antigravity' provider, we only want to strip the default placeholder project (expanded-palisade-stpfc)
+                                            // to avoid IDE default project quota 429. If it's a custom user project, we keep it.
+                                            const isDefaultProj = (proj) => {
+                                                if (typeof proj !== 'string') return false;
+                                                return proj === 'expanded-palisade-stpfc' || proj.startsWith('expanded-palisade-');
+                                            };
+                                            if (bodyJson.project && !isDefaultProj(bodyJson.project)) {
+                                                targetProject = bodyJson.project;
+                                            }
+                                        }
+                                    } else {
+                                        // If no pool account is used, keep the original project if present
+                                        targetProject = bodyJson.project || null;
+                                    }
+
+                                    if (targetProject) {
+                                        // Inject/Overwrite the project ID only if the original request originally had a project field
+                                        if (bodyJson.project !== undefined && bodyJson.project !== targetProject) {
+                                            bodyJson.project = targetProject;
+                                            const newBodyStr = JSON.stringify(bodyJson);
+                                            finalReqBody = Buffer.from(newBodyStr, 'utf8');
+                                            customHeaders['content-length'] = finalReqBody.length;
+                                            if (attemptIndex === 0) {
+                                                this.emit('log', `🛡️ Injected configured project ID '${targetProject}' into payload.`);
+                                            }
+                                        }
+                                    } else {
+                                        // Strip the project ID if we don't have one (e.g. Antigravity accounts)
+                                        if (bodyJson.project) {
+                                            delete bodyJson.project;
+                                            const newBodyStr = JSON.stringify(bodyJson);
+                                            finalReqBody = Buffer.from(newBodyStr, 'utf8');
+                                            customHeaders['content-length'] = finalReqBody.length;
+                                            if (attemptIndex === 0) {
+                                                this.emit('log', `🛡️ Stripped 'project' ID from payload to avoid IDE default project quota 429.`);
+                                            }
+                                        }
                                     }
                                 }
                             } catch (e) {}

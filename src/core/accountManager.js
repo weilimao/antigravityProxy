@@ -9,7 +9,13 @@ class AccountManager extends EventEmitter {
         this.accountsFilePath = '';
         this.accounts = []; // Array of { id, email, access_token, addedAt }
         this.poolMode = false;
+        this.projectPoolMode = false;
+        this.activeChannel = 'antigravity';
         this.currentIndex = 0;
+    }
+
+    _generateAccountId() {
+        return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     }
 
     init(userDataPath) {
@@ -29,8 +35,21 @@ class AccountManager extends EventEmitter {
             if (fs.existsSync(this.accountsFilePath)) {
                 const data = fs.readFileSync(this.accountsFilePath, 'utf8');
                 const parsed = JSON.parse(data);
-                this.accounts = parsed.accounts || [];
+                this.accounts = (parsed.accounts || []).map((account) => {
+                    const provider = account.provider || (account.projectId ? 'project' : 'antigravity');
+                    return {
+                        ...account,
+                        id: account.id || this._generateAccountId(),
+                        provider: provider,
+                        projectId: account.projectId || account.project_id || null,
+                        projectLabel: account.projectLabel || account.project_label || '',
+                        scopeType: provider === 'antigravity' ? 'account' : 'project',
+                        enabled: typeof account.enabled === 'boolean' ? account.enabled : true
+                    };
+                });
                 this.poolMode = parsed.poolMode || false;
+                this.projectPoolMode = parsed.projectPoolMode || false;
+                this.activeChannel = parsed.activeChannel || 'antigravity';
                 if (this.accounts.some(a => a.cooldownUntil)) {
                     this.startCooldownMonitor();
                 }
@@ -46,7 +65,9 @@ class AccountManager extends EventEmitter {
         try {
             const data = {
                 accounts: this.accounts,
-                poolMode: this.poolMode
+                poolMode: this.poolMode,
+                projectPoolMode: this.projectPoolMode,
+                activeChannel: this.activeChannel
             };
             fs.writeFileSync(this.accountsFilePath, JSON.stringify(data, null, 2), 'utf8');
             if (!silent) {
@@ -58,19 +79,57 @@ class AccountManager extends EventEmitter {
     }
 
     addAccount(accountInfo) {
-        // Remove existing account with same email if exists
-        this.accounts = this.accounts.filter(a => a.email !== accountInfo.email);
+        const normalizedEmail = accountInfo.email || 'Unknown Account';
+        const normalizedProvider = accountInfo.provider || 'unknown';
+        const normalizedProjectId = accountInfo.projectId || accountInfo.project_id || null;
 
-        this.accounts.push({
-            id: Date.now().toString(),
-            email: accountInfo.email,
+        // Same email can own multiple projects. Only replace the exact same identity.
+        this.accounts = this.accounts.filter((account) => {
+            const accountProjectId = account.projectId || account.project_id || null;
+            return !(
+                account.email === normalizedEmail &&
+                (account.provider || 'unknown') === normalizedProvider &&
+                accountProjectId === normalizedProjectId
+            );
+        });
+
+        const newId = this._generateAccountId();
+        const isEnabled = typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true;
+
+        const newAccount = {
+            id: newId,
+            email: normalizedEmail,
             access_token: accountInfo.access_token,
             refresh_token: accountInfo.refresh_token || null,
-            provider: accountInfo.provider || 'unknown',
+            provider: normalizedProvider,
+            projectId: normalizedProjectId,
+            projectLabel: accountInfo.projectLabel || accountInfo.project_label || '',
+            scopeType: accountInfo.scopeType || (normalizedProjectId ? 'project' : 'account'),
             addedAt: new Date().toISOString(),
             tier: accountInfo.tier || 'Standard',
-            enabled: typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true
-        });
+            enabled: isEnabled
+        };
+
+        this.accounts.push(newAccount);
+
+        if (isEnabled) {
+            const isAntigravity = normalizedProvider === 'antigravity';
+            if (isAntigravity) {
+                this.accounts.forEach(a => {
+                    if (a.provider === 'antigravity' && a.id !== newId && a.enabled !== false) {
+                        a.enabled = false;
+                    }
+                });
+            } else {
+                if (!this.projectPoolMode) {
+                    this.accounts.forEach(a => {
+                        if (a.provider !== 'antigravity' && a.id !== newId && a.enabled !== false) {
+                            a.enabled = false;
+                        }
+                    });
+                }
+            }
+        }
 
         this.saveAccounts();
     }
@@ -89,6 +148,9 @@ class AccountManager extends EventEmitter {
             id: a.id,
             email: a.email,
             provider: a.provider || 'gemini-cli',
+            projectId: a.projectId || a.project_id || null,
+            projectLabel: a.projectLabel || '',
+            scopeType: a.scopeType || ((a.projectId || a.project_id) ? 'project' : 'account'),
             addedAt: a.addedAt,
             cooldowns: a.cooldowns || {},
             cooldownUntil: a.cooldownUntil || null,
@@ -116,19 +178,46 @@ class AccountManager extends EventEmitter {
         const acc = this.accounts.find(a => a.id === id);
         if (acc && acc.enabled !== enabled) {
             acc.enabled = enabled;
+
+            // 限制：
+            // 1. 对于官方账号 (provider === 'antigravity')，在未开启 poolMode 时，只能启用一个
+            // 2. 对于项目账号 (provider !== 'antigravity')，在未开启 projectPoolMode 时，只能启用一个
+            if (enabled) {
+                const isAntigravity = acc.provider === 'antigravity';
+                if (isAntigravity) {
+                    if (!this.poolMode) {
+                        this.accounts.forEach(a => {
+                            if (a.provider === 'antigravity' && a.id !== id && a.enabled !== false) {
+                                a.enabled = false;
+                            }
+                        });
+                    }
+                } else {
+                    if (!this.projectPoolMode) {
+                        this.accounts.forEach(a => {
+                            if (a.provider !== 'antigravity' && a.id !== id && a.enabled !== false) {
+                                a.enabled = false;
+                            }
+                        });
+                    }
+                }
+            }
+
             this.saveAccounts(true);
             this.emit('accounts-updated', this.accounts);
             
-            // 如果被禁用，通知粘性路由器作废该账号的所有会话映射
-            if (!enabled) {
-                try {
-                    const sessionRouter = require('./sessionRouter');
-                    const invalidated = sessionRouter.invalidateByAccountId(id);
-                    if (invalidated > 0 && global.addLogToBuffer) {
-                        global.addLogToBuffer(`🔄 [粘性路由] 账号 ${acc.email} 已停用，已重置 ${invalidated} 个关联会话`);
-                    }
-                } catch (e) {}
-            }
+            // 如果有任何被禁用的账号，通知粘性路由器作废该账号的所有会话映射
+            this.accounts.forEach(a => {
+                if (a.enabled === false) {
+                    try {
+                        const sessionRouter = require('./sessionRouter');
+                        const invalidated = sessionRouter.invalidateByAccountId(a.id);
+                        if (invalidated > 0 && global.addLogToBuffer) {
+                            global.addLogToBuffer(`🔄 [粘性路由] 账号 ${a.email} 已停用，已重置 ${invalidated} 个关联会话`);
+                        }
+                    } catch (e) {}
+                }
+            });
         }
     }
 
@@ -144,11 +233,47 @@ class AccountManager extends EventEmitter {
 
     setPoolMode(enabled) {
         this.poolMode = enabled;
+        if (enabled) {
+            this.projectPoolMode = false;
+            this.activeChannel = 'antigravity';
+        }
         this.saveAccounts();
     }
 
     getPoolMode() {
         return this.poolMode;
+    }
+
+    setProjectPoolMode(enabled) {
+        this.projectPoolMode = enabled;
+        if (enabled) {
+            this.poolMode = false;
+            this.activeChannel = 'project';
+        }
+        this.saveAccounts();
+    }
+
+    getProjectPoolMode() {
+        return this.projectPoolMode;
+    }
+
+    setActiveChannel(channel) {
+        if (channel === 'antigravity' || channel === 'project') {
+            if (channel === 'project' && this.poolMode) {
+                // 如果官方负载均衡开启，拒绝将实际路由通道切换为 project
+                return;
+            }
+            if (channel === 'antigravity' && this.projectPoolMode) {
+                // 如果项目负载均衡开启，拒绝将实际路由通道切换为 antigravity
+                return;
+            }
+            this.activeChannel = channel;
+            this.saveAccounts();
+        }
+    }
+
+    getActiveChannel() {
+        return this.activeChannel || 'antigravity';
     }
 
     getModelCategory(modelName) {
@@ -160,12 +285,30 @@ class AccountManager extends EventEmitter {
     }
 
     getNextAccount(modelName) {
-        if (!this.poolMode || this.accounts.length === 0) {
+        if (this.accounts.length === 0) return null;
+        const currentChannel = this.activeChannel || 'antigravity';
+        // 官方账号永远不进行负载均衡，项目账号根据 projectPoolMode 决定
+        const isPool = currentChannel === 'project' ? this.projectPoolMode : this.poolMode;
+        
+        // 如果没有开启负载均衡，直接返回当前通道的第一个启用且不在冷静期的账号
+        const activeAccounts = this.accounts.filter(a => {
+            const accountChannel = a.provider === 'antigravity' ? 'antigravity' : 'project';
+            return accountChannel === currentChannel && a.enabled !== false;
+        });
+
+        if (activeAccounts.length === 0) {
             return null;
         }
 
-        const activeAccounts = this.accounts.filter(a => a.enabled !== false);
-        if (activeAccounts.length === 0) {
+        if (!isPool) {
+            // 单账号模式下，直接返回第一个可用（且不在冷静期）的账号
+            const category = this.getModelCategory(modelName);
+            const now = Date.now();
+            const account = activeAccounts[0];
+            const cooldownUntil = account.cooldowns ? (account.cooldowns[category] || null) : account.cooldownUntil;
+            if (!cooldownUntil || now >= cooldownUntil) {
+                return account;
+            }
             return null;
         }
 
@@ -239,11 +382,16 @@ class AccountManager extends EventEmitter {
      * @returns {Array}
      */
     getAvailableAccounts(modelName) {
-        if (!this.poolMode || this.accounts.length === 0) return [];
+        if (this.accounts.length === 0) return [];
         const now = Date.now();
         const category = this.getModelCategory(modelName);
+        const currentChannel = this.activeChannel || 'antigravity';
+        
         return this.accounts.filter(a => {
+            const accountChannel = a.provider === 'antigravity' ? 'antigravity' : 'project';
+            if (accountChannel !== currentChannel) return false;
             if (a.enabled === false) return false;
+            
             const cooldownUntil = a.cooldowns
                 ? (a.cooldowns[category] || null)
                 : a.cooldownUntil;
@@ -267,9 +415,13 @@ class AccountManager extends EventEmitter {
             modelName = null;
         }
 
-        if (!this.poolMode || !sessionKey) {
+        const currentChannel = this.activeChannel || 'antigravity';
+        const isPool = currentChannel === 'project' ? this.projectPoolMode : this.poolMode;
+
+        if (!isPool || !sessionKey) {
             return this.getNextAccount(modelName);
         }
+
         const available = this.getAvailableAccounts(modelName);
         if (available.length === 0) return null;
         // 单账号时直接返回，无需路由计算

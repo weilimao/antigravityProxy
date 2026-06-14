@@ -1,6 +1,6 @@
 {
   "name": "antigravity-proxy-desktop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Antigravity Proxy Desktop Client",
   "main": "main.js",
   "scripts": {
@@ -25,7 +25,8 @@
       "engine.js",
       "index.html",
       "src/**/*",
-      "package.json"
+      "package.json",
+      "credentials.json"
     ],
     "publish": [
       {
@@ -36,7 +37,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.ico"
+      "icon": "icon.png"
     },
     "nsis": {
       "oneClick": false,

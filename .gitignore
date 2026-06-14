@@ -9,3 +9,21 @@ certs/
 
 # Local OAuth credentials - never commit this file
 credentials.json
+
+# Temporary development files
+*.bak
+cli_generate_logs.txt
+log_results.txt
+log_results_summary.txt
+src_core_quotaService_HEAD.js
+get_quota.js
+test_quota.js
+test_quota_service.js
+stats.json
+
+# Temp icons
+icon.ico
+icon.png
+src/ui/icon.png
+src/ui/tray-icon.png
+

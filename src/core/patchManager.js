@@ -190,11 +190,19 @@ function updateAgentapiBat(enable, appData, homeDir, caPath) {
         path.join(appData, 'antigravity', 'bin', 'agentapi.bat'),
         path.join(appData, 'Antigravity', 'bin', 'agentapi.bat'),
         path.join(homeDir, '.antigravity', 'bin', 'agentapi.bat'),
+        // Support .gemini directory which is commonly used by newer Antigravity/Gemini versions
+        path.join(homeDir, '.gemini', 'antigravity', 'bin', 'agentapi.bat'),
+        path.join(homeDir, '.gemini', 'antigravity-cli', 'bin', 'agentapi.bat'),
+        path.join(homeDir, '.gemini', 'antigravity-ide', 'bin', 'agentapi.bat'),
     ];
     const shCandidates = [
         path.join(appData, 'antigravity', 'bin', 'agentapi'),
         path.join(appData, 'Antigravity', 'bin', 'agentapi'),
         path.join(homeDir, '.antigravity', 'bin', 'agentapi'),
+        // Support .gemini directory which is commonly used by newer Antigravity/Gemini versions
+        path.join(homeDir, '.gemini', 'antigravity', 'bin', 'agentapi'),
+        path.join(homeDir, '.gemini', 'antigravity-cli', 'bin', 'agentapi'),
+        path.join(homeDir, '.gemini', 'antigravity-ide', 'bin', 'agentapi'),
     ];
 
     const PROXY_URL = 'http://127.0.0.1:18443';
@@ -245,10 +253,12 @@ function updateAgentapiBat(enable, appData, homeDir, caPath) {
 
     let batPatched = false;
     for (const p of batCandidates) {
-        if (patchBat(p)) { batPatched = true; break; }
+        if (patchBat(p)) { 
+            batPatched = true; 
+        }
     }
     for (const p of shCandidates) {
-        if (patchSh(p)) break;
+        patchSh(p);
     }
     return batPatched;
 }

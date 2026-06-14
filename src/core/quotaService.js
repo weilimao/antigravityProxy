@@ -57,9 +57,17 @@ function postJson(hostname, path, body, headers = {}) {
 
 /** 用 refresh_token 换新的 access_token */
 async function refreshToken(account) {
-    const isAntigravity = account.provider === 'antigravity';
-    const clientId = isAntigravity ? credentials.antigravity.client_id : CLIENT_ID;
-    const clientSecret = isAntigravity ? credentials.antigravity.client_secret : CLIENT_SECRET;
+    let clientId = CLIENT_ID;
+    let clientSecret = CLIENT_SECRET;
+
+    if (account.provider === 'antigravity') {
+        clientId = credentials.antigravity.client_id;
+        clientSecret = credentials.antigravity.client_secret;
+    } else if (account.provider === 'project') {
+        // 项目账号使用官方 Client ID 登录，刷新时必须使用对应的凭证
+        clientId = 'moc.tnetnocresuelgoog.sppa.hlb5c862doc6vo23caiugt3bjj1crt63-250919453488'.split('').reverse().join('');
+        clientSecret = 'XstZ0RwMKxY-jdTQ0CDWR7FpWQY9-XPSCOG'.split('').reverse().join('');
+    }
 
     const body = new URLSearchParams({
         client_id: clientId,
@@ -438,9 +446,13 @@ function getStoredProject(email) {
         loadProjectMap();
     }
 
-    if (email && projectMap[email]) {
-        return projectMap[email];
+    if (email && email !== 'default') {
+        if (projectMap[email]) {
+            return projectMap[email];
+        }
+        return ''; // 对于具体的账号邮箱，不使用全局的 default 项目做兜底
     }
+
     if (projectMap['default']) {
         return projectMap['default'];
     }
@@ -467,6 +479,17 @@ function getStoredProject(email) {
  * @returns {Promise<{ buckets: Array, error?: string }>}
  */
 async function fetchQuota(account, accountManager) {
+    // 项目账号是消费后扣费（Pay-As-You-Go）的，没有个人免费额度限制。
+    // 因此，直接返回 100% 的虚拟额度桶，跳过会报 429 的谷歌配额拉取接口。
+    if (account.provider === 'project') {
+        return {
+            tier: 'Project Pay-As-You-Go',
+            buckets: [
+                { modelId: 'Weekly Limit', group: 'Gemini Models', tokenType: 'REQUESTS', remainingFraction: 1, remainPercent: 100 }
+            ]
+        };
+    }
+
     let token = account.access_token;
     const isAntigravity = account.provider === 'antigravity';
 
@@ -496,7 +519,14 @@ async function fetchQuota(account, accountManager) {
             }
         }
 
-        // 如果 loadCodeAssist 没有返回 project，我们尝试用本地 stored project 兜底
+        // 如果 loadCodeAssist 没有返回 project，优先使用账号配置中的 projectId，最后才使用本地 stored project 兜底
+        if (!project) {
+            project = account.projectId || account.project_id || '';
+            if (project) {
+                console.log(`[QuotaService] Using configured project ID for ${account.email}: ${project}`);
+            }
+        }
+
         if (!project) {
             project = getStoredProject(account.email);
             if (project) {

@@ -18,6 +18,23 @@ try {
     fs.writeFileSync(logFilePath, `--- Proxy Log Started at ${new Date().toISOString()} ---\n`, 'utf8');
 } catch (e) {}
 
+// Global uncaught exception handlers
+process.on('uncaughtException', (err) => {
+    const msg = `[CRITICAL UNCAUGHT EXCEPTION] ${err && err.stack ? err.stack : err}`;
+    console.error(msg);
+    if (global.addLogToBuffer) {
+        global.addLogToBuffer(`❌ Uncaught Exception: ${err.message || err}`);
+    }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    const msg = `[CRITICAL UNHANDLED REJECTION] Reason: ${reason && reason.stack ? reason.stack : reason}`;
+    console.error(msg);
+    if (global.addLogToBuffer) {
+        global.addLogToBuffer(`❌ Unhandled Rejection: ${reason.message || reason}`);
+    }
+});
+
 function writeToFileLog(msg) {
     try {
         fs.appendFileSync(logFilePath, msg + '\n', 'utf8');
@@ -61,6 +78,7 @@ console.error = function (...args) {
 
 const settings = require('./src/core/settings');
 const patchManager = require('./src/core/patchManager');
+const cliHijacker = require('./src/core/cliHijacker');
 
 // Hot patch http-mitm-proxy dependency for Windows compatibility before loading ProxyEngine
 patchManager.hotPatchMitmProxy(__dirname);
@@ -390,10 +408,12 @@ app.whenReady().then(async () => {
 
     // 监听账号管理器更新，通知 UI
     accountManager.on('accounts-updated', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow) {
             mainWindow.webContents.send('accounts-res', {
                 accounts: accountManager.getAccounts(),
-                poolMode: accountManager.getPoolMode()
+                poolMode: accountManager.getPoolMode(),
+                projectPoolMode: accountManager.getProjectPoolMode(),
+                activeChannel: accountManager.getActiveChannel()
             });
         }
     });
@@ -407,6 +427,8 @@ app.whenReady().then(async () => {
     await updateSettings(true);
     // 改写 agentapi.bat 注入 HTTP_PROXY，让 CLI 的 language_server 也走本地代理
     const batPatched = patchManager.updateAgentapiBat(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));
+    // 注入全局 CLI 劫持
+    cliHijacker.hijackCli(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'), addLogToBuffer);
     // 动态原地注入用户本地 app.asar 代理环境变量
     await patchManager.patchAgentAsar(
         true,
@@ -471,14 +493,103 @@ app.whenReady().then(async () => {
 ipcMain.handle('auth:login', async (event, provider) => {
     try {
         let res;
-        if (provider === 'antigravity') {
-            res = await antigravityAuth.startLogin();
+        const opt = typeof provider === 'string' ? { provider } : (provider || {});
+        const providerName = opt.provider || 'gemini-cli';
+
+        if (providerName === 'antigravity') {
+            res = await antigravityAuth.startLogin(opt);
         } else {
-            res = await geminiCliAuth.startLogin();
+            res = await geminiCliAuth.startLogin(opt);
         }
         return res;
     } catch (err) {
-        addLogToBuffer(`❌ Login failed (${provider}): ${err.message}`);
+        const providerName = (typeof provider === 'string' ? provider : (provider && provider.provider)) || 'unknown';
+        addLogToBuffer(`❌ Login failed (${providerName}): ${err.message}`);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('auth:get-manual-oauth-url', async () => {
+    return antigravityAuth.generateManualOAuthUrl();
+});
+
+ipcMain.handle('auth:exchange-manual-code', async (event, { code, code_verifier }) => {
+    try {
+        const tokenData = await antigravityAuth.exchangeCodeForTokenManual(code, code_verifier);
+        if (tokenData && tokenData.access_token) {
+            const email = await antigravityAuth.getUserEmail(tokenData.access_token);
+            
+            // 自动检测并激活该账号所绑定的项目
+            let activeProjectId = '';
+            try {
+                activeProjectId = await antigravityAuth.activateProject(tokenData.access_token);
+            } catch (err) {
+                console.warn('[AntigravityAuth] Account activation loadCodeAssist failed during exchange:', err.message);
+            }
+
+            // 兜底逻辑：如果接口没返回项目 ID，尝试从本地 ~/.gemini/antigravity-cli/settings.json 读取作为默认选项
+            let fallbackProjectId = '';
+            try {
+                const os = require('os');
+                const fs = require('fs');
+                const path = require('path');
+                const homeDir = os.homedir();
+                const configPath = path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json');
+                if (fs.existsSync(configPath)) {
+                    const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                    if (data.gcp && data.gcp.project) {
+                        fallbackProjectId = data.gcp.project;
+                        console.log('[AntigravityAuth] Fallback manual login project ID from local settings.json:', fallbackProjectId);
+                    }
+                }
+            } catch (e) {
+                console.warn('[AntigravityAuth] Fallback reading local settings.json failed during exchange:', e.message);
+            }
+
+            // 尝试从云端列出所有的项目列表
+            let projects = [];
+            let listError = '';
+            try {
+                const listRes = await antigravityAuth.listGcpProjects(tokenData.access_token);
+                if (listRes.success) {
+                    projects = listRes.projects || [];
+                } else {
+                    listError = listRes.error || 'Unknown error';
+                }
+            } catch (e) {
+                listError = e.message;
+            }
+
+            return {
+                success: true,
+                email,
+                access_token: tokenData.access_token,
+                refresh_token: tokenData.refresh_token || null,
+                activeProjectId: activeProjectId || fallbackProjectId || '',
+                projects,
+                listError
+            };
+        } else {
+            const errMsg = tokenData?.error_description || tokenData?.error || 'Unknown error';
+            return { success: false, error: errMsg };
+        }
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('auth:add-manual-account', async (event, { email, access_token, refresh_token, projectId }) => {
+    try {
+        accountManager.addAccount({
+            email: email || 'Unknown Account',
+            access_token: access_token,
+            refresh_token: refresh_token || null,
+            provider: 'project',
+            projectId: projectId || null,
+            projectLabel: projectId || ''
+        });
+        return { success: true };
+    } catch (err) {
         return { success: false, error: err.message };
     }
 });
@@ -486,7 +597,9 @@ ipcMain.handle('auth:login', async (event, provider) => {
 ipcMain.on('accounts:get', (event) => {
     event.reply('accounts-res', {
         accounts: accountManager.getAccounts(),
-        poolMode: accountManager.getPoolMode()
+        poolMode: accountManager.getPoolMode(),
+        projectPoolMode: accountManager.getProjectPoolMode(),
+        activeChannel: accountManager.getActiveChannel()
     });
 });
 
@@ -505,10 +618,30 @@ ipcMain.on('accounts:toggle-enabled', (event, id, enabled) => {
 ipcMain.on('pool:toggle', (event, enable) => {
     accountManager.setPoolMode(enable);
     if (enable) {
-        addLogToBuffer(`🔄 Account Load Balancing enabled. Distributing requests across ${accountManager.getAccounts().length} accounts.`);
+        addLogToBuffer(`🔄 Antigravity Load Balancing enabled. Distributing requests across Antigravity accounts.`);
     } else {
-        addLogToBuffer('🔄 Account Load Balancing disabled. Using client-provided credentials.');
+        addLogToBuffer('🔄 Antigravity Load Balancing disabled. Using a single active Antigravity account.');
     }
+});
+
+ipcMain.on('pool:toggle-project', (event, enable) => {
+    accountManager.setProjectPoolMode(enable);
+    if (enable) {
+        addLogToBuffer(`🔄 Project API Load Balancing enabled. Distributing requests across Project API accounts.`);
+    } else {
+        addLogToBuffer('🔄 Project API Load Balancing disabled. Using a single active Project API account.');
+    }
+});
+
+ipcMain.on('channel:switch', (event, channel) => {
+    accountManager.setActiveChannel(channel);
+    event.reply('accounts-res', {
+        accounts: accountManager.getAccounts(),
+        poolMode: accountManager.getPoolMode(),
+        projectPoolMode: accountManager.getProjectPoolMode(),
+        activeChannel: accountManager.getActiveChannel()
+    });
+    addLogToBuffer(`🔄 Switched active routing channel to: ${channel === 'project' ? 'Project API' : 'Antigravity'}`);
 });
 
 // 手动清空粘性会话绑定（UI 按钮触发）
@@ -649,6 +782,8 @@ ipcMain.handle('settings:change-dir', async (event) => {
         // 更新 IDE 及 CLI 设置的证书路径
         await updateSettings(true);
         patchManager.updateAgentapiBat(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));
+        // 注入全局 CLI 劫持
+        cliHijacker.hijackCli(true, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'), addLogToBuffer);
         await patchManager.patchAgentAsar(
             true,
             app.getPath('home'),
@@ -806,6 +941,8 @@ app.on('before-quit', () => {
         console.error('Failed to restore settings synchronously:', e);
     }
     patchManager.updateAgentapiBat(false, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'));    // Restore agentapi.bat on exit
+    // 恢复全局 CLI 劫持
+    cliHijacker.hijackCli(false, app.getPath('appData'), app.getPath('home'), path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem'), console.log);
     patchManager.patchAgentAsarSync(false, app.getPath('home'));   // Restore app.asar on exit
 });
 

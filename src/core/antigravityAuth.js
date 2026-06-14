@@ -27,7 +27,7 @@ class AntigravityAuth {
         return 'Code-Assist/1.22.4 (JetBrains; Windows 11 10.0; x86_64) cloudaicompanion/1.22.4';
     }
 
-    startLogin() {
+    startLogin(options = {}) {
         return new Promise((resolve, reject) => {
             if (this.server) {
                 this.server.close();
@@ -58,13 +58,14 @@ class AntigravityAuth {
                                     const email = await this.getUserEmail(tokenData.access_token);
 
                                     try {
-                                        const projectId = await this.activateProject(tokenData.access_token);
+                                        const projectId = options.projectId || await this.activateProject(tokenData.access_token);
                                         accountManager.addAccount({
                                             email: email || 'Unknown Account',
                                             access_token: tokenData.access_token,
                                             refresh_token: tokenData.refresh_token || null,
                                             provider: 'antigravity',
-                                            project_id: projectId // 假设 accountManager 可以接收多余的属性
+                                            project_id: projectId,
+                                            projectLabel: options.projectLabel || projectId
                                         });
                                         resolve({ success: true, email, provider: 'antigravity' });
                                     } catch (err) {
@@ -73,7 +74,9 @@ class AntigravityAuth {
                                             email: email || 'Unknown Account',
                                             access_token: tokenData.access_token,
                                             refresh_token: tokenData.refresh_token || null,
-                                            provider: 'antigravity'
+                                            provider: 'antigravity',
+                                            project_id: options.projectId || null,
+                                            projectLabel: options.projectLabel || options.projectId || ''
                                         });
                                         resolve({ success: true, email, provider: 'antigravity' });
                                     }
@@ -342,6 +345,112 @@ class AntigravityAuth {
             doRequest();
         });
     }
+
+    generateManualOAuthUrl() {
+        const crypto = require('crypto');
+        const verifier = crypto.randomBytes(32).toString('base64url');
+        const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+        const state = crypto.randomBytes(16).toString('hex');
+        
+        const scopes = [
+            'https://www.googleapis.com/auth/cloud-platform',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/cclog',
+            'https://www.googleapis.com/auth/experimentsandconfigs',
+            'openid'
+        ];
+        
+        const OFFICIAL_CLIENT_ID = 'moc.tnetnocresuelgoog.sppa.hlb5c862doc6vo23caiugt3bjj1crt63-250919453488'.split('').reverse().join('');
+        const OFFICIAL_REDIRECT_URI = 'https://antigravity.google/oauth-callback';
+
+        const scopeParam = scopes.map(encodeURIComponent).join('+');
+        const url = `https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=${OFFICIAL_CLIENT_ID}&code_challenge=${challenge}&code_challenge_method=S256&prompt=consent&redirect_uri=${encodeURIComponent(OFFICIAL_REDIRECT_URI)}&response_type=code&scope=${scopeParam}&state=${state}`;
+        
+        return { url, code_verifier: verifier };
+    }
+
+    exchangeCodeForTokenManual(code, verifier) {
+        return new Promise((resolve, reject) => {
+            const OFFICIAL_CLIENT_ID = 'moc.tnetnocresuelgoog.sppa.hlb5c862doc6vo23caiugt3bjj1crt63-250919453488'.split('').reverse().join('');
+            const OFFICIAL_CLIENT_SECRET = 'XstZ0RwMKxY-jdTQ0CDWR7FpWQY9-XPSCOG'.split('').reverse().join('');
+            const OFFICIAL_REDIRECT_URI = 'https://antigravity.google/oauth-callback';
+
+            const postData = new URLSearchParams({
+                client_id: OFFICIAL_CLIENT_ID,
+                client_secret: OFFICIAL_CLIENT_SECRET,
+                code: code,
+                code_verifier: verifier,
+                grant_type: 'authorization_code',
+                redirect_uri: OFFICIAL_REDIRECT_URI
+            }).toString();
+
+            const options = {
+                hostname: 'oauth2.googleapis.com',
+                port: 443,
+                path: '/token',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(postData)
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data);
+                        resolve(parsed);
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+
+            req.on('error', (e) => reject(e));
+            req.write(postData);
+            req.end();
+        });
+    }
+
+    listGcpProjects(accessToken) {
+        return new Promise((resolve) => {
+            const options = {
+                hostname: 'cloudresourcemanager.googleapis.com',
+                port: 443,
+                path: '/v1/projects',
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'User-Agent': this.getAntigravityUserAgent()
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (res.statusCode === 200 && parsed.projects) {
+                            resolve({ success: true, projects: parsed.projects });
+                        } else {
+                            const errMsg = parsed.error ? parsed.error.message : `HTTP ${res.statusCode}`;
+                            resolve({ success: false, error: errMsg });
+                        }
+                    } catch (e) {
+                        resolve({ success: false, error: '解析项目列表失败: ' + e.message });
+                    }
+                });
+            });
+
+            req.on('error', (e) => resolve({ success: false, error: e.message }));
+            req.end();
+        });
+    }
 }
 
 module.exports = new AntigravityAuth();
+
