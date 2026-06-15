@@ -1,6 +1,6 @@
 {
   "name": "antigravity-proxy-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Antigravity Proxy Desktop Client",
   "main": "main.js",
   "scripts": {
