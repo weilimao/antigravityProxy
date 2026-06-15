@@ -52,6 +52,12 @@ const gaugeCircle = document.getElementById('gaugeCircle');
 const barTokensIn = document.getElementById('barTokensIn');
 const barTokensOut = document.getElementById('barTokensOut');
 
+const valRetries = document.getElementById('valRetries');
+const valErrors = document.getElementById('valErrors');
+const barSuccess = document.getElementById('barSuccess');
+const barErrors = document.getElementById('barErrors');
+const valSuccessRate = document.getElementById('valSuccessRate');
+
 // Tab Controls
 const tabModels = document.getElementById('tabModels');
 const tabLogs = document.getElementById('tabLogs');
@@ -779,8 +785,20 @@ toggleTheme.addEventListener('click', () => {
 
 // Export Logs Button
 btnExportLogs.addEventListener('click', () => {
-    const logFilePath = require('path').join(ipcRenderer.sendSync('get-userdata-path' || ''), 'stats.json');
-    shell.showItemInFolder(logFilePath);
+    try {
+        const dirInfo = ipcRenderer.sendSync('settings:get-dir-sync') || {};
+        const activeDir = dirInfo.activeDir || ipcRenderer.sendSync('get-userdata-path') || '';
+        const logFilePath = require('path').join(activeDir, 'stats.json');
+        
+        const fs = require('fs');
+        if (!fs.existsSync(logFilePath)) {
+            shell.openPath(activeDir);
+        } else {
+            shell.showItemInFolder(logFilePath);
+        }
+    } catch (err) {
+        console.error('Failed to show stats.json in folder:', err);
+    }
 });
 
 // IPC listeners from main process
@@ -826,7 +844,27 @@ ipcRenderer.on('stats-updated', (event, payload) => {
     allRequests = requests;
 
     // 1. Update Metrics Cards
-    valReqs.textContent = stats.totalRequests;
+    const totalRequests = (stats.totalRequests || 0) + (stats.totalErrors || 0);
+    valReqs.textContent = totalRequests;
+    
+    if (valRetries) {
+        valRetries.textContent = stats.totalRetries || 0;
+    }
+    if (valErrors) {
+        valErrors.textContent = stats.totalErrors || 0;
+    }
+    
+    const successRate = totalRequests > 0
+        ? (stats.totalRequests / totalRequests * 100)
+        : 100;
+    if (valSuccessRate) {
+        valSuccessRate.textContent = successRate.toFixed(1) + '%';
+    }
+    if (barSuccess && barErrors) {
+        barSuccess.style.width = `${successRate}%`;
+        barErrors.style.width = `${100 - successRate}%`;
+    }
+
     valTokens.textContent = (stats.totalInputTokens + stats.totalOutputTokens).toLocaleString();
     
     // In/Out sub breakdown text
@@ -943,6 +981,8 @@ const modalCost = document.getElementById('modalCost');
 const modalAccount = document.getElementById('modalAccount');
 const modalAccountWrapper = document.getElementById('modalAccountWrapper');
 const modalJsonArea = document.getElementById('modalJsonArea');
+const modalHeaderArea = document.getElementById('modalHeaderArea');
+const modalCopyHeadersBtn = document.getElementById('modalCopyHeadersBtn');
 
 function hideModal() {
     detailsModal.classList.add('opacity-0', 'pointer-events-none');
@@ -989,7 +1029,28 @@ function showModal(log) {
         formattedJson = '{\n  "message": "无请求参数"\n}';
     }
     modalJsonArea.textContent = formattedJson;
-    
+
+    // 渲染请求头 JSON
+    let formattedHeaders = '';
+    if (log.requestHeaders) {
+        try {
+            formattedHeaders = JSON.stringify(log.requestHeaders, null, 2);
+        } catch (e) {
+            formattedHeaders = String(log.requestHeaders);
+        }
+    } else {
+        formattedHeaders = '{\n  "message": "无请求头数据"\n}';
+    }
+    modalHeaderArea.textContent = formattedHeaders;
+
+    modalCopyHeadersBtn.onclick = () => {
+        navigator.clipboard.writeText(formattedHeaders).then(() => {
+            const span = modalCopyHeadersBtn.querySelector('span:not(.material-symbols-outlined)');
+            span.textContent = currentLanguage === 'zh' ? '已复制！' : 'Copied!';
+            setTimeout(() => { span.textContent = '复制'; }, 1500);
+        });
+    };
+
     modalCopyBtn.onclick = () => {
         navigator.clipboard.writeText(formattedJson).then(() => {
             const originalText = modalCopyBtn.querySelector('span:not(.material-symbols-outlined)').textContent;
@@ -2803,3 +2864,164 @@ async function refreshAllAccountsQuotas() {
         }
     }
 }
+
+// --- 异常与重试日志弹窗及交互逻辑 ---
+(function() {
+    const btnViewRetries = document.getElementById('btnViewRetries');
+    const btnViewErrors = document.getElementById('btnViewErrors');
+    const modal = document.getElementById('retryErrorLogsModal');
+    const container = document.getElementById('retryErrorLogsModalContainer');
+    const closeBtn = document.getElementById('retryErrorLogsModalCloseBtn');
+    const closeBtnSec = document.getElementById('retryErrorLogsModalCloseBtnSecondary');
+    const filter = document.getElementById('logTypeFilter');
+    const tableBody = document.getElementById('retryErrorLogsTableBody');
+    const emptyState = document.getElementById('retryErrorLogsEmpty');
+    const countBadge = document.getElementById('retryErrorLogsCount');
+    const btnClear = document.getElementById('btnClearRetryErrorLogs');
+    const btnExport = document.getElementById('btnExportRetryErrorLogs');
+
+    let logsList = [];
+
+    // 打开弹窗
+    async function openModal(filterType = 'ALL') {
+        if (!modal) return;
+        
+        // 设置筛选器
+        if (filter) {
+            filter.value = filterType;
+        }
+
+        // 动画显示
+        modal.classList.remove('pointer-events-none', 'opacity-0');
+        modal.classList.add('opacity-100');
+        if (container) {
+            container.classList.remove('scale-95');
+            container.classList.add('scale-100');
+        }
+
+        // 加载数据
+        await fetchAndRenderLogs();
+    }
+
+    // 关闭弹窗
+    function closeModal() {
+        if (!modal) return;
+        modal.classList.add('pointer-events-none', 'opacity-0');
+        modal.classList.remove('opacity-100');
+        if (container) {
+            container.classList.add('scale-95');
+            container.classList.remove('scale-100');
+        }
+    }
+
+    // 获取并渲染数据
+    async function fetchAndRenderLogs() {
+        try {
+            logsList = await ipcRenderer.invoke('retry-error-logs:get') || [];
+            renderLogs();
+        } catch (e) {
+            console.error('Failed to fetch retry/error logs:', e);
+        }
+    }
+
+    // 渲染函数
+    function renderLogs() {
+        if (!tableBody) return;
+
+        const filterVal = filter ? filter.value : 'ALL';
+        const filtered = logsList.filter(log => {
+            if (filterVal === 'ALL') return true;
+            return log.type === filterVal;
+        });
+
+        if (countBadge) {
+            countBadge.textContent = `${filtered.length} 条记录`;
+        }
+
+        if (filtered.length === 0) {
+            tableBody.innerHTML = '';
+            if (emptyState) emptyState.classList.remove('hidden');
+            return;
+        }
+
+        if (emptyState) emptyState.classList.add('hidden');
+
+        tableBody.innerHTML = filtered.map(log => {
+            const typeBadge = log.type === 'RETRY'
+                ? '<span class="px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">重试</span>'
+                : '<span class="px-2 py-0.5 rounded-full font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300">报错</span>';
+
+            const email = log.account || '-';
+            const model = log.model || '-';
+            const path = log.path || '-';
+            const attemptStr = log.type === 'RETRY' ? `第 ${log.attempt} 次` : '最终失败';
+            const errorMsg = log.error || '-';
+
+            return `
+                <tr class="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors border-b border-outline-variant/10 dark:border-white/5">
+                    <td class="px-4 py-3 font-data-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">${log.timestamp}</td>
+                    <td class="px-4 py-3 whitespace-nowrap">${typeBadge}</td>
+                    <td class="px-4 py-3 font-data-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">${attemptStr}</td>
+                    <td class="px-4 py-3 font-data-mono text-slate-600 dark:text-slate-300 break-all select-all">${email}</td>
+                    <td class="px-4 py-3 font-sans text-slate-600 dark:text-slate-300 whitespace-nowrap">${model}</td>
+                    <td class="px-4 py-3 font-data-mono text-primary dark:text-primary-fixed-dim break-all select-all">${path}</td>
+                    <td class="px-4 py-3 font-data-mono text-rose-600 dark:text-rose-400 break-all select-text font-semibold">${errorMsg}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // 绑定基础事件
+    if (btnViewRetries) {
+        btnViewRetries.addEventListener('click', () => openModal('RETRY'));
+    }
+    if (btnViewErrors) {
+        btnViewErrors.addEventListener('click', () => openModal('ERROR'));
+    }
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeModal);
+    }
+    if (closeBtnSec) {
+        closeBtnSec.addEventListener('click', closeModal);
+    }
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeModal();
+            }
+        });
+    }
+    if (filter) {
+        filter.addEventListener('change', renderLogs);
+    }
+
+    // 清空日志
+    if (btnClear) {
+        btnClear.addEventListener('click', async () => {
+            const filterVal = filter ? filter.value : 'ALL';
+            let confirmMsg = '确定要清空所有重试和报错的日志记录吗？';
+            if (filterVal === 'RETRY') {
+                confirmMsg = '确定要清空所有的重试日志记录并把重试次数清零吗？';
+            } else if (filterVal === 'ERROR') {
+                confirmMsg = '确定要清空所有的报错日志记录并把报错次数清零吗？';
+            }
+
+            if (confirm(confirmMsg)) {
+                const success = await ipcRenderer.invoke('retry-error-logs:clear', filterVal);
+                if (success) {
+                    await fetchAndRenderLogs();
+                }
+            }
+        });
+    }
+
+    // 导出日志
+    if (btnExport) {
+        btnExport.addEventListener('click', async () => {
+            const success = await ipcRenderer.invoke('retry-error-logs:export');
+            if (success) {
+                alert('日志成功导出！');
+            }
+        });
+    }
+})();

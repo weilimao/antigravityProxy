@@ -545,4 +545,4 @@ async function fetchQuota(account, accountManager) {
     }
 }
 
-module.exports = { fetchQuota, setLastCapturedProject, setCapturedProject };
+module.exports = { fetchQuota, setLastCapturedProject, setCapturedProject, refreshToken };

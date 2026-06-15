@@ -1,4 +1,5 @@
 const https = require('https');
+const http = require('http');
 const zlib = require('zlib');
 const EventEmitter = require('events');
 const net = require('net');
@@ -10,6 +11,17 @@ const { Proxy } = require('http-mitm-proxy');
 const { PassThrough } = require('stream');
 const statsTracker = require('./src/core/stats');
 const accountManager = require('./src/core/accountManager');
+
+/**
+ * 判断请求路径是否为被忽略的官方后台遥测/控制接口
+ * @param {string} path 
+ * @returns {boolean}
+ */
+function isIgnoredTelemetry(path) {
+    if (!path) return false;
+    // 过滤 v1internal 下除 retrieveUserQuota（配额拉取）以外的辅助接口
+    return path.includes('v1internal') && !path.includes('retrieveUserQuota');
+}
 
 class ProxyEngine extends EventEmitter {
     constructor() {
@@ -227,8 +239,9 @@ class ProxyEngine extends EventEmitter {
                 let cacheStatus = 'NONE';
                 let logged = false;
                 let allocatedAccount = null;
+                let currentAttemptIndex = 0;
 
-                const logRequestToTracker = (statusCode) => {
+                const logRequestToTracker = (statusCode, errorDetail = null) => {
                     if (logged) return;
                     logged = true;
                     
@@ -247,6 +260,32 @@ class ProxyEngine extends EventEmitter {
                         }
                     }
 
+                    if (statusCode >= 400 && !isIgnoredTelemetry(targetPath)) {
+                        statsTracker.trackError(1);
+                        try {
+                            const retryErrorLogger = require('./src/core/retryErrorLogger');
+                            let errorReason = errorDetail || `HTTP Status ${statusCode}`;
+                            if (!errorDetail) {
+                                if (statusCode === 429) {
+                                    errorReason = 'QUOTA_EXHAUSTED / RATE_LIMIT';
+                                } else if (statusCode === 503) {
+                                    errorReason = 'CAPACITY_EXHAUSTED / SERVICE_UNAVAILABLE';
+                                } else if (statusCode === 401) {
+                                    errorReason = 'TOKEN_EXPIRED / UNAUTHORIZED';
+                                }
+                            }
+                            retryErrorLogger.log('ERROR', {
+                                path: targetPath,
+                                model: currentModel,
+                                account: allocatedAccount || 'Unknown Account',
+                                attempt: currentAttemptIndex + 1,
+                                error: errorReason
+                            });
+                        } catch (logErr) {
+                            console.error('Failed to log error:', logErr);
+                        }
+                    }
+
                     statsTracker.addRequestLog({
                         method: req.method,
                         host: targetHost,
@@ -259,6 +298,7 @@ class ProxyEngine extends EventEmitter {
                         cacheStatus,
                         statusCode,
                         requestBody,
+                        requestHeaders: req.headers,
                         sessionId: sessionKey
                     });
 
@@ -275,6 +315,10 @@ class ProxyEngine extends EventEmitter {
                 }
 
                 const attemptRequest = (attemptIndex) => {
+                    if (attemptIndex > 0 && !isIgnoredTelemetry(targetPath)) {
+                        statsTracker.trackRetry(1);
+                        this.emit('stats', statsTracker.getPayload());
+                    }
                     return new Promise((resolve, reject) => {
                         // --- 账号池 token 注入 ---
                         const accountManager = require('./src/core/accountManager');
@@ -368,10 +412,21 @@ class ProxyEngine extends EventEmitter {
                             path: targetPath,
                             method: req.method,
                             headers: customHeaders,
-                            rejectUnauthorized: false
+                            rejectUnauthorized: false,
+                            timeout: 15000 // 15 seconds timeout
                         };
 
                         const proxyReq = https.request(options, (proxyRes) => {
+                            // 401 Token Expired / Unauthorized
+                            if (proxyRes.statusCode === 401) {
+                                proxyRes.on('data', () => {}); // 消耗数据流
+                                proxyRes.on('end', () => {
+                                    logRequestToTracker(401);
+                                });
+                                reject(new Error('TOKEN_EXPIRED'));
+                                return;
+                            }
+
                             // 429 Quota/Rate Limit Exhausted
                             if (proxyRes.statusCode === 429 && !targetPath.includes('retrieveUserQuota')) {
                                 const resChunks = [];
@@ -542,6 +597,10 @@ class ProxyEngine extends EventEmitter {
 
                         proxyReq.on('error', (e) => reject(e));
 
+                        proxyReq.on('timeout', () => {
+                            proxyReq.destroy(new Error('ETIMEDOUT'));
+                        });
+
                         if (finalReqBody.length > 0) {
                             proxyReq.write(finalReqBody);
                         }
@@ -553,11 +612,28 @@ class ProxyEngine extends EventEmitter {
                 const maxRetries = 20;
 
                 for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                    currentAttemptIndex = attempt;
                     try {
                         if (attempt > 0) this.emit('log', `${logPrefix} ⚖️ 正在进行负载均衡第 ${attempt + 1}/${maxRetries + 1} 次尝试...`);
                         const result = await attemptRequest(attempt);
 
                         if (attempt > 0) this.emit('log', `${logPrefix} Response Status: ${result.proxyRes.statusCode}`);
+
+                        // --- 开始：处理普通的 503/429 报错计数以及正常成功状态的重置 ---
+                        const statusCode = result.proxyRes.statusCode || 200;
+                        if (lastUsedAccountObj) {
+                            if (statusCode === 503 || statusCode === 429) {
+                                accountManager.recordAccountError(
+                                    lastUsedAccountObj.id, 
+                                    statusCode, 
+                                    currentModel, 
+                                    (msg) => this.emit('log', msg)
+                                );
+                            } else if (statusCode >= 200 && statusCode < 300) {
+                                accountManager.resetAccountError(lastUsedAccountObj.id);
+                            }
+                        }
+                        // --- 结束 ---
 
                         res.writeHead(result.proxyRes.statusCode || 200, result.proxyRes.headers);
                         if (result.bodyBuffer) {
@@ -570,8 +646,27 @@ class ProxyEngine extends EventEmitter {
                     } catch (error) {
                         const isRetryableError = error.message === 'CAPACITY_EXHAUSTED' || 
                                                  error.message === 'QUOTA_EXHAUSTED' || 
+                                                 error.message === 'TOKEN_EXPIRED' ||
                                                  error.code === 'ECONNRESET' || 
                                                  error.code === 'ETIMEDOUT';
+
+                        // 处理 Token 过期自动刷新
+                        if (lastUsedAccountObj && error.message === 'TOKEN_EXPIRED') {
+                            const accId = lastUsedAccountObj.id;
+                            const email = lastUsedAccountObj.email;
+                            
+                            this.emit('log', `🔑 [负载均衡] 检测到账号 ${email} Token 已过期 (401)。正在尝试自动刷新 Token 并重试...`);
+                            
+                            try {
+                                const newToken = await accountManager.refreshAccountToken(accId);
+                                lastUsedAccountObj.access_token = newToken;
+                                this.emit('log', `🔑 [负载均衡] 账号 ${email} Token 自动刷新成功，即将发起重试...`);
+                            } catch (refreshErr) {
+                                this.emit('log', `❌ [负载均衡] 账号 ${email} Token 自动刷新失败: ${refreshErr.message}`);
+                                // 刷新失败后，把这个账号放入短暂的冷静期，防止在剩下的重试次数里继续使用它
+                                accountManager.setAccountCooldown(accId, Date.now() + 2 * 60 * 1000, currentModel);
+                            }
+                        }
 
                         // 额度空置触发冷静期隔离
                         if (lastUsedAccountObj && (error.message === 'CAPACITY_EXHAUSTED' || error.message === 'QUOTA_EXHAUSTED')) {
@@ -640,10 +735,29 @@ class ProxyEngine extends EventEmitter {
                             const baseDelay = this.BASE_DELAY_MS * Math.pow(2, attempt);
                             const delay = Math.min(baseDelay, 10000) + jitter; // 限制单次等待延迟最大在 10s + 抖动 左右
                             this.emit('log', `${logPrefix} ⚠️ 请求失败 (${error.message || error.code})。负载均衡将在 ${Math.round(delay)}ms 后自动切换账号重试...`);
+                            
+                            if (!isIgnoredTelemetry(targetPath)) {
+                                try {
+                                    const retryErrorLogger = require('./src/core/retryErrorLogger');
+                                    retryErrorLogger.log('RETRY', {
+                                        path: targetPath,
+                                        model: currentModel,
+                                        account: lastUsedAccountObj ? lastUsedAccountObj.email : 'Unknown Account',
+                                        attempt: attempt + 1,
+                                        error: error.message || error.code || 'Unknown Error'
+                                    });
+                                } catch (logErr) {
+                                    console.error('[Engine] Failed to write retry log:', logErr);
+                                }
+                            }
+
                             await this.sleep(delay);
                         } else {
                             this.emit('log', `${logPrefix} ❌ [负载均衡] 尝试失败: ${error.message || error.code || '所有可用账号额度均已耗尽'}`);
-                            logRequestToTracker(error.message === 'QUOTA_EXHAUSTED' ? 429 : 503);
+                            logRequestToTracker(
+                                error.message === 'QUOTA_EXHAUSTED' ? 429 : 503,
+                                error.message || error.code || '所有可用账号额度均已耗尽'
+                            );
                             res.writeHead(error.message === 'QUOTA_EXHAUSTED' ? 429 : 503, { 'Content-Type': 'application/json' });
                             res.end(JSON.stringify({ 
                                 error: { 
@@ -681,7 +795,42 @@ class ProxyEngine extends EventEmitter {
         });
     }
 
+    resetConnections() {
+        this.emit('log', '🔌 检测到系统从休眠中唤醒，正在重置本地连接池与活跃隧道...');
+        if (this.activeTunnels && this.activeTunnels.size > 0) {
+            this.emit('log', `🧹 Closing ${this.activeTunnels.size} active passthrough tunnels...`);
+            for (const tunnel of this.activeTunnels) {
+                try { tunnel.socket.destroy(); } catch (e) {}
+                try { tunnel.serverSocket.destroy(); } catch (e) {}
+            }
+            this.activeTunnels.clear();
+        }
+
+        try {
+            https.globalAgent.destroy();
+            http.globalAgent.destroy();
+            this.emit('log', '✅ 全局 HTTP/HTTPS 代理连接池已清空。');
+        } catch (e) {
+            this.emit('log', `⚠️ 清空全局连接池失败: ${e.message}`);
+        }
+    }
+
     stop() {
+        if (this.activeTunnels && this.activeTunnels.size > 0) {
+            this.emit('log', `🧹 Closing ${this.activeTunnels.size} active passthrough tunnels...`);
+            for (const tunnel of this.activeTunnels) {
+                try { tunnel.socket.destroy(); } catch (e) {}
+                try { tunnel.serverSocket.destroy(); } catch (e) {}
+            }
+            this.activeTunnels.clear();
+        }
+
+        // 销毁全局 agent 中的所有 socket 缓存
+        try {
+            https.globalAgent.destroy();
+            http.globalAgent.destroy();
+        } catch (e) {}
+
         if (this.proxy) {
             this.proxy.close();
             this.isRunning = false;

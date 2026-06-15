@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const originalFs = require('original-fs');
@@ -334,14 +334,14 @@ function createWindow() {
 
 function updateLoginItemSettings() {
     try {
-        const autoStart = settings.getAutoStart();
+        const autoStart = app.isPackaged ? settings.getAutoStart() : false;
         const silentStart = settings.getSilentStart();
         app.setLoginItemSettings({
             openAtLogin: autoStart,
             path: process.execPath,
             args: silentStart ? ['--silent'] : []
         });
-        console.log(`[AutoStart] Updated login item settings. openAtLogin: ${autoStart}, args: ${silentStart ? '--silent' : 'none'}`);
+        console.log(`[AutoStart] Updated login item settings. openAtLogin: ${autoStart} (isPackaged: ${app.isPackaged}), args: ${silentStart ? '--silent' : 'none'}`);
     } catch (e) {
         console.error('[AutoStart] Failed to update login item settings:', e);
     }
@@ -357,6 +357,9 @@ app.whenReady().then(async () => {
     // 显式更新数据统计模块的路径，纠正 ProxyEngine 实例化时的时序差
     const statsTracker = require('./src/core/stats');
     statsTracker.updatePath(settings.getActiveDataDirectory());
+
+    const retryErrorLogger = require('./src/core/retryErrorLogger');
+    retryErrorLogger.updatePath(settings.getActiveDataDirectory());
 
     // 初始化计费配置的活跃路径
     const pricing = require('./src/core/pricing');
@@ -487,6 +490,17 @@ app.whenReady().then(async () => {
     addLogToBuffer(`✅ Global settings mapped. All IDE/Agent traffic is now routed through us.${batPatched ? ' CLI bat patched.' : ''}`);
     addLogToBuffer('ℹ️ CLI: HTTP_PROXY injected into agentapi.bat for language_server interception.');
     addLogToBuffer('ℹ️ Current Mode: Passthrough (Direct connection, no retries).');
+
+    // 监听系统唤醒事件，重置代理连接状态与活跃隧道，保持代理端口常开以防 Connection Refused
+    powerMonitor.on('resume', () => {
+        addLogToBuffer('🔌 检测到系统已从休眠中唤醒，正在重置代理连接状态...');
+        try {
+            engine.resetConnections();
+            addLogToBuffer('🚀 代理服务器连接已全部重置并就绪，可随时发送消息。');
+        } catch (e) {
+            console.error('Error resetting connections on resume:', e);
+        }
+    });
 });
 
 // --- 账号池相关 IPC ---
@@ -772,6 +786,9 @@ ipcMain.handle('settings:change-dir', async (event) => {
         const statsTracker = require('./src/core/stats');
         statsTracker.updatePath(targetDir);
         
+        const retryErrorLogger = require('./src/core/retryErrorLogger');
+        retryErrorLogger.updatePath(targetDir);
+        
         const pricing = require('./src/core/pricing');
         pricing.updatePath(targetDir);
 
@@ -899,6 +916,68 @@ ipcMain.on('app:install-update', (event, filePath) => {
 
 ipcMain.handle('app:get-version', () => {
     return app.getVersion();
+});
+
+ipcMain.handle('retry-error-logs:get', () => {
+    const retryErrorLogger = require('./src/core/retryErrorLogger');
+    return retryErrorLogger.getLogs();
+});
+
+ipcMain.handle('retry-error-logs:clear', (event, type) => {
+    const retryErrorLogger = require('./src/core/retryErrorLogger');
+    retryErrorLogger.clearLogs(type);
+
+    const statsTracker = require('./src/core/stats');
+    statsTracker.clearRetriesOrErrors(type);
+
+    // 主动同步更新主界面统计指标
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('stats-updated', statsTracker.getPayload());
+    }
+    return true;
+});
+
+ipcMain.handle('retry-error-logs:export', async (event) => {
+    const retryErrorLogger = require('./src/core/retryErrorLogger');
+    const logs = retryErrorLogger.getLogs();
+    
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '导出重试与报错日志',
+        defaultPath: path.join(app.getPath('downloads'), `antigravity_retry_error_logs_${Date.now()}.json`),
+        filters: [
+            { name: 'JSON Files', extensions: ['json'] },
+            { name: 'CSV Files', extensions: ['csv'] }
+        ]
+    });
+
+    if (!filePath) return false;
+
+    try {
+        let content = '';
+        if (filePath.endsWith('.csv')) {
+            // 导出 CSV 格式
+            const headers = ['时间', '类型', '尝试/状态', '账号', '目标模型', '接口路径', '错误/异常详情'];
+            const rows = logs.map(log => [
+                log.timestamp,
+                log.type === 'RETRY' ? '重试' : '报错',
+                log.type === 'RETRY' ? `第 ${log.attempt} 次` : '最终失败',
+                log.account || '',
+                log.model || '',
+                log.path || '',
+                log.error || ''
+            ]);
+            content = '\uFEFF' + [headers, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+        } else {
+            // 默认导出 JSON
+            content = JSON.stringify(logs, null, 2);
+        }
+        
+        fs.writeFileSync(filePath, content, 'utf8');
+        return true;
+    } catch (e) {
+        console.error('[Main] Failed to export logs:', e);
+        return false;
+    }
 });
 // ---------------------------------
 

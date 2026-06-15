@@ -99,6 +99,25 @@ function getPricingForModel(modelName) {
     
     const name = modelName.toLowerCase().trim();
     
+    // Exact mapping logic for specific models requested by the user
+    const exactMappings = {
+        'gemini-3-flash-agent': 'gemini 3.5 flash (high)',
+        'gemini-3.5-flash-low': 'gemini 3.5 flash (medium)',
+        'gemini-3.5-flash-extra-low': 'gemini 3.5 flash (low)',
+        'gemini-pro-agent': 'gemini 3.1 pro (high)',
+        'gemini-3.1-pro-low': 'gemini 3.1 pro (low)',
+        'claude-sonnet-4-6': 'claude sonnet 4.6 (thinking)',
+        'claude-opus-4-6-thinking': 'claude opus 4.6 (thinking)',
+        'gpt-oss-120b-medium': 'gpt-oss 120b (medium)'
+    };
+    
+    if (exactMappings[name]) {
+        const targetKey = exactMappings[name];
+        if (currentPricing[targetKey]) {
+            return currentPricing[targetKey];
+        }
+    }
+    
     // Check direct matches first
     if (currentPricing[name]) {
         return currentPricing[name];

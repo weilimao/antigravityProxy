@@ -71,6 +71,8 @@ class StatsTracker {
             totalOutputTokens: 0,
             totalCachedTokens: 0,
             totalCost: 0,
+            totalRetries: 0,
+            totalErrors: 0,
             models: {}
         };
         this.trends = []; // Array of hourly bins: { time: "HH:00", input: 0, output: 0, cached: 0, cost: 0 }
@@ -140,6 +142,24 @@ class StatsTracker {
         this.updateTrends(inTokens, outTokens, cachedTokens, cost, inputCost, outputCost, cachedCost);
 
         // 4. Trigger async save
+        this.scheduleSave();
+    }
+
+    /**
+     * Records proxy retry attempts
+     * @param {number} count 
+     */
+    trackRetry(count = 1) {
+        this.stats.totalRetries = (this.stats.totalRetries || 0) + count;
+        this.scheduleSave();
+    }
+
+    /**
+     * Records final proxy or upstream errors
+     * @param {number} count 
+     */
+    trackError(count = 1) {
+        this.stats.totalErrors = (this.stats.totalErrors || 0) + count;
         this.scheduleSave();
     }
 
@@ -216,6 +236,7 @@ class StatsTracker {
             cost: calculateCost(reqLog.model, reqLog.inTokens, reqLog.outTokens, reqLog.cachedTokens),
             account: reqLog.account || null,
             requestBody: truncateRequestBody(reqLog.requestBody),
+            requestHeaders: reqLog.requestHeaders || null,
             sessionId: reqLog.sessionId || '-'
         };
 
@@ -250,6 +271,20 @@ class StatsTracker {
     }
 
     /**
+     * 重置重试和错误统计次数
+     * @param {string} type - 'RETRY' | 'ERROR' | 'ALL'
+     */
+    clearRetriesOrErrors(type) {
+        if (type === 'RETRY' || type === 'ALL') {
+            this.stats.totalRetries = 0;
+        }
+        if (type === 'ERROR' || type === 'ALL') {
+            this.stats.totalErrors = 0;
+        }
+        this.saveToDisk();
+    }
+
+    /**
      * Saves data to disk synchronously
      */
     saveToDisk() {
@@ -278,7 +313,11 @@ class StatsTracker {
         try {
             const fileContent = fs.readFileSync(this.persistPath, 'utf8');
             const parsed = JSON.parse(fileContent);
-            if (parsed.stats) this.stats = parsed.stats;
+            if (parsed.stats) {
+                this.stats = parsed.stats;
+                if (this.stats.totalRetries === undefined) this.stats.totalRetries = 0;
+                if (this.stats.totalErrors === undefined) this.stats.totalErrors = 0;
+            }
             if (parsed.trends) this.trends = parsed.trends;
             if (parsed.requests) {
                 this.requests = parsed.requests.map(req => {

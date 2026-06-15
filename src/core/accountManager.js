@@ -12,6 +12,7 @@ class AccountManager extends EventEmitter {
         this.projectPoolMode = false;
         this.activeChannel = 'antigravity';
         this.currentIndex = 0;
+        this.errorCounts = new Map(); // 内存中维护账号报错计数: accountId -> count
     }
 
     _generateAccountId() {
@@ -433,6 +434,7 @@ class AccountManager extends EventEmitter {
     updateAccountCooldownFromQuota(id, buckets) {
         const acc = this.accounts.find(a => a.id === id);
         if (acc && buckets) {
+            this.resetAccountError(id); // 刷新配额后重置报错计数
             if (!acc.cooldowns) {
                 acc.cooldowns = {};
             }
@@ -568,6 +570,90 @@ class AccountManager extends EventEmitter {
             }
             this.emit('accounts-updated', this.accounts);
         }, 120000); // 2 分钟轮询一次
+    }
+
+    /**
+     * 记录账号请求的 503 或 429 报错，达到 5 次后自动刷新配额
+     * @param {string} id - 账号 ID
+     * @param {number} statusCode - HTTP 状态码
+     * @param {string} modelName - 发生报错的模型名
+     * @param {Function} [logFn] - 可选的日志回调，用于将日志输出到代理控制台
+     */
+    recordAccountError(id, statusCode, modelName, logFn) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (!acc) return;
+
+        if (statusCode === 503 || statusCode === 429) {
+            const category = this.getModelCategory(modelName);
+            const now = Date.now();
+            
+            // 检查当前账号是否仍属于可用状态（没有在冷静期内）
+            const cooldownUntil = acc.cooldowns ? (acc.cooldowns[category] || null) : acc.cooldownUntil;
+            const hasQuota = !cooldownUntil || now >= cooldownUntil;
+
+            if (hasQuota) {
+                const currentCount = (this.errorCounts.get(id) || 0) + 1;
+                this.errorCounts.set(id, currentCount);
+
+                const logMsg = `⚠️ [负载均衡] 账号 ${acc.email} 遇到 ${statusCode} 报错，连续报错次数: ${currentCount}/5`;
+                if (logFn) logFn(logMsg);
+                if (global.addLogToBuffer) global.addLogToBuffer(logMsg);
+
+                if (currentCount >= 5) {
+                    const alertMsg = `🔄 [负载均衡] 账号 ${acc.email} 连续遇到 503/429 达到 5 次且本地判定配额未用尽，触发自动刷新账号配额以纠正状态...`;
+                    if (logFn) logFn(alertMsg);
+                    if (global.addLogToBuffer) global.addLogToBuffer(alertMsg);
+
+                    this.errorCounts.delete(id); // 触发刷新时清除计数，防止并发多次触发刷新
+
+                    // 异步调用配额服务刷新配额
+                    const quotaService = require('./quotaService');
+                    quotaService.fetchQuota(acc, this)
+                        .then(res => {
+                            if (res && res.buckets) {
+                                const changed = this.updateAccountCooldownFromQuota(acc.id, res.buckets);
+                                if (!changed && global.addLogToBuffer) {
+                                    global.addLogToBuffer(`ℹ️ [负载均衡] 账号 ${acc.email} 刷新配额完成，但状态未改变。`);
+                                }
+                            }
+                            if (res && res.tier) {
+                                this.updateAccountTier(acc.id, res.tier);
+                            }
+                        })
+                        .catch(err => {
+                            const errMsg = `❌ [负载均衡] 账号 ${acc.email} 自动刷新配额失败: ${err.message}`;
+                            if (logFn) logFn(errMsg);
+                            if (global.addLogToBuffer) global.addLogToBuffer(errMsg);
+                        });
+                }
+            }
+        }
+    }
+
+    /**
+     * 重置账号的 503 或 429 报错计数
+     * @param {string} id - 账号 ID
+     */
+    resetAccountError(id) {
+        if (this.errorCounts.has(id)) {
+            this.errorCounts.delete(id);
+        }
+    }
+
+    /**
+     * 自动为账号刷新 token 并更新持久化
+     * @param {string} id - 账号 ID
+     * @returns {Promise<string>} 新的 access_token
+     */
+    async refreshAccountToken(id) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (!acc) throw new Error('Account not found');
+        if (!acc.refresh_token) throw new Error('No refresh token available');
+
+        const quotaService = require('./quotaService');
+        const newToken = await quotaService.refreshToken(acc);
+        this.updateAccessToken(id, newToken);
+        return newToken;
     }
 }
 
