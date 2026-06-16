@@ -5,20 +5,15 @@ const originalFs = require('original-fs');
 const { exec, execSync, spawn } = require('child_process');
 const asar = require('asar');
 
-// Request single instance lock to prevent double launch
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
     app.quit();
     process.exit(0);
 }
-
-// Setup physical log file in workspace
 const logFilePath = path.join(__dirname, 'proxy.log');
 try {
     fs.writeFileSync(logFilePath, `--- Proxy Log Started at ${new Date().toISOString()} ---\n`, 'utf8');
 } catch (e) {}
-
-// Global uncaught exception handlers
 process.on('uncaughtException', (err) => {
     const msg = `[CRITICAL UNCAUGHT EXCEPTION] ${err && err.stack ? err.stack : err}`;
     console.error(msg);
@@ -26,7 +21,6 @@ process.on('uncaughtException', (err) => {
         global.addLogToBuffer(`❌ Uncaught Exception: ${err.message || err}`);
     }
 });
-
 process.on('unhandledRejection', (reason, promise) => {
     const msg = `[CRITICAL UNHANDLED REJECTION] Reason: ${reason && reason.stack ? reason.stack : reason}`;
     console.error(msg);
@@ -34,14 +28,11 @@ process.on('unhandledRejection', (reason, promise) => {
         global.addLogToBuffer(`❌ Unhandled Rejection: ${reason.message || reason}`);
     }
 });
-
 function writeToFileLog(msg) {
     try {
         fs.appendFileSync(logFilePath, msg + '\n', 'utf8');
     } catch (e) {}
 }
-
-// Suppress noisy connection reset and abort logs from http-mitm-proxy in terminal, but record them in file
 const originalConsoleDebug = console.debug;
 console.debug = function (...args) {
     const msg = `[DEBUG] ${args.join(' ')}`;
@@ -51,7 +42,6 @@ console.debug = function (...args) {
     }
     originalConsoleDebug.apply(console, args);
 };
-
 const originalConsoleError = console.error;
 console.error = function (...args) {
     const msg = `[ERROR] ${args.map(arg => arg instanceof Error ? arg.stack : String(arg)).join(' ')}`;
@@ -75,20 +65,15 @@ console.error = function (...args) {
     }
     originalConsoleError.apply(console, args);
 };
-
 const settings = require('./src/core/settings');
 const patchManager = require('./src/core/patchManager');
 const cliHijacker = require('./src/core/cliHijacker');
-
-// Hot patch http-mitm-proxy dependency for Windows compatibility before loading ProxyEngine
 patchManager.hotPatchMitmProxy(__dirname);
 const ProxyEngine = require('./engine');
 const accountManager = require('./src/core/accountManager');
 const geminiCliAuth = require('./src/core/geminiCliAuth');
 const antigravityAuth = require('./src/core/antigravityAuth');
 const quotaService = require('./src/core/quotaService');
-
-// Helper to kill Agent process
 function killAgentProcess(sync = false) {
     if (sync) {
         if (process.platform === 'win32') {
@@ -96,7 +81,6 @@ function killAgentProcess(sync = false) {
         } else if (process.platform === 'darwin') {
             try { execSync('pkill -f Antigravity', { stdio: 'ignore' }); } catch (e) {}
         }
-        // Sync sleep
         const seconds = 1.5;
         if (process.platform === 'win32') {
             try { execSync(`powershell -Command Start-Sleep -s ${seconds}`, { stdio: 'ignore' }); } catch (e) {
@@ -170,57 +154,10 @@ app.on('second-instance', (event, commandLine, workingDirectory) => {
     }
 });
 
-function checkCertStatus(callback) {
-    if (process.platform === 'win32') {
-        exec('certutil -user -store ROOT NodeMITMProxyCA', (err, stdout) => {
-            if (!err && stdout && stdout.includes('NodeMITMProxyCA')) {
-                callback(true);
-            } else {
-                callback(false);
-            }
-        });
-    } else if (process.platform === 'darwin') {
-        exec('security find-certificate -c "NodeMITMProxyCA"', (err) => {
-            callback(!err);
-        });
-    } else {
-        callback(false);
-    }
-}
-
-function installCert(callback) {
-    const caCertPath = path.join(settings.getActiveDataDirectory(), 'certs', 'certs', 'ca.pem');
-    if (!fs.existsSync(caCertPath)) {
-        callback(false, 'Certificate file ca.pem not found. Please start proxy first.');
-        return;
-    }
-
-    if (process.platform === 'win32') {
-        exec(`certutil -user -addstore -f ROOT "${caCertPath}"`, (err, stdout, stderr) => {
-            if (err) {
-                callback(false, err.message);
-            } else {
-                checkCertStatus(callback);
-            }
-        });
-    } else {
-        callback(false, 'Only Windows is supported for automatic installation.');
-    }
-}
-
-function uninstallCert(callback) {
-    if (process.platform === 'win32') {
-        exec('certutil -user -delstore ROOT NodeMITMProxyCA', (err, stdout, stderr) => {
-            if (err) {
-                callback(false, err.message);
-            } else {
-                checkCertStatus(callback);
-            }
-        });
-    } else {
-        callback(false, 'Only Windows is supported for automatic uninstallation.');
-    }
-}
+const certManager = require('./src/core/certManager');
+const checkCertStatus = certManager.checkCertStatus;
+const installCert = certManager.installCert;
+const uninstallCert = certManager.uninstallCert;
 
 function addLogToBuffer(msg) {
     if (settings && typeof settings.getEnableSystemLog === 'function') {
@@ -831,10 +768,14 @@ ipcMain.on('cert-status', (event) => {
 });
 
 ipcMain.on('cert-install', (event) => {
-    addLogToBuffer('⏳ Starting Root CA installation (waiting for user confirmation in Windows dialog)...');
+    const dialogMsg = process.platform === 'win32'
+        ? 'waiting for user confirmation in Windows dialog'
+        : 'waiting for user confirmation in macOS system prompt';
+    addLogToBuffer(`⏳ Starting Root CA installation (${dialogMsg})...`);
     installCert((isInstalled, errorMsg) => {
         if (isInstalled) {
-            addLogToBuffer('🔒 Local Root CA successfully trusted in Windows User store.');
+            const storeName = process.platform === 'win32' ? 'Windows User store' : 'macOS Keychain';
+            addLogToBuffer(`🔒 Local Root CA successfully trusted in ${storeName}.`);
         } else {
             addLogToBuffer(`❌ Failed to trust local Root CA: ${errorMsg || 'User cancelled or error occurred'}`);
         }
@@ -846,7 +787,8 @@ ipcMain.on('cert-uninstall', (event) => {
     addLogToBuffer('⏳ Removing Root CA certificate...');
     uninstallCert((isInstalled, errorMsg) => {
         if (!isInstalled) {
-            addLogToBuffer('🔓 Local Root CA removed from Windows User store.');
+            const storeName = process.platform === 'win32' ? 'Windows User store' : 'macOS Keychain';
+            addLogToBuffer(`🔓 Local Root CA removed from ${storeName}.`);
         } else {
             addLogToBuffer(`❌ Failed to remove local Root CA: ${errorMsg || 'Error occurred'}`);
         }
