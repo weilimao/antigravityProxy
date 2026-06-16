@@ -31,7 +31,11 @@ const command = 'npx electron-builder --publish always';
 console.log('Starting build and publish...');
 const child = spawn(command, { 
   stdio: 'inherit', 
-  shell: shell 
+  shell: shell,
+  env: {
+    ...process.env,
+    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  }
 });
 
 child.on('close', (code) => {

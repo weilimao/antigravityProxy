@@ -47,7 +47,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "icon": "icon.png"
     }
   },
   "devDependencies": {
