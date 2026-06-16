@@ -25,8 +25,7 @@
       "engine.js",
       "index.html",
       "src/**/*",
-      "package.json",
-      "credentials.json"
+      "package.json"
     ],
     "publish": [
       {

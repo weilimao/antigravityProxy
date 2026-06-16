@@ -7,7 +7,7 @@ test-extract/
 asar_extracted/
 certs/
 
-# Local OAuth credentials - never commit this file
+# Optional local credentials override (built-in defaults are in src/core/credentials.js)
 credentials.json
 
 # Temporary development files
@@ -21,9 +21,5 @@ test_quota.js
 test_quota_service.js
 stats.json
 
-# Temp icons
-icon.ico
-icon.png
-src/ui/icon.png
-src/ui/tray-icon.png
+
 
