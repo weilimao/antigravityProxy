@@ -413,7 +413,7 @@ class ProxyEngine extends EventEmitter {
                             method: req.method,
                             headers: customHeaders,
                             rejectUnauthorized: false,
-                            timeout: 15000 // 15 seconds timeout
+                            timeout: 300000 // 5 minutes timeout to prevent breaking long report generation/SSE streams
                         };
 
                         const proxyReq = https.request(options, (proxyRes) => {
@@ -439,6 +439,8 @@ class ProxyEngine extends EventEmitter {
                                             bodyStr = zlib.gunzipSync(resBody).toString('utf8');
                                         } else if (proxyRes.headers['content-encoding'] === 'deflate') {
                                             bodyStr = zlib.inflateSync(resBody).toString('utf8');
+                                        } else if (proxyRes.headers['content-encoding'] === 'br') {
+                                            bodyStr = zlib.brotliDecompressSync(resBody).toString('utf8');
                                         } else {
                                             bodyStr = resBody.toString('utf8');
                                         }
@@ -473,6 +475,8 @@ class ProxyEngine extends EventEmitter {
                                             bodyStr = zlib.gunzipSync(resBody).toString('utf8');
                                         } else if (proxyRes.headers['content-encoding'] === 'deflate') {
                                             bodyStr = zlib.inflateSync(resBody).toString('utf8');
+                                        } else if (proxyRes.headers['content-encoding'] === 'br') {
+                                            bodyStr = zlib.brotliDecompressSync(resBody).toString('utf8');
                                         } else {
                                             bodyStr = resBody.toString('utf8');
                                         }
@@ -545,26 +549,39 @@ class ProxyEngine extends EventEmitter {
                             const clientStream = new PassThrough();
                             clientStream.statusCode = proxyRes.statusCode;
                             clientStream.headers = proxyRes.headers;
+                            
+                            // 主链路：直接将原始响应流传输给客户端
                             proxyRes.pipe(clientStream);
 
-                            let snifferStream = proxyRes;
-                            if (proxyRes.headers['content-encoding'] === 'gzip') {
-                                snifferStream = proxyRes.pipe(zlib.createGunzip());
-                            } else if (proxyRes.headers['content-encoding'] === 'deflate') {
-                                snifferStream = proxyRes.pipe(zlib.createInflate());
-                            }
-
-                            const maxWindowSize = 8192; // 8KB 足够容纳 usageMetadata
-                            let tailBuffer = '';
-                            snifferStream.on('data', (chunk) => {
-                                tailBuffer += chunk.toString('utf8');
-                                if (tailBuffer.length > maxWindowSize) {
-                                    tailBuffer = tailBuffer.substring(tailBuffer.length - maxWindowSize);
+                            // 旁路链路：如果是 Gemini GenerateContent 接口且状态正常，才进行数据嗅探
+                            // 完全解耦：不使用 pipe，避免解压器产生背压卡死主链路（如 Claude 长连接/SSE）
+                            if (proxyRes.statusCode === 200 && targetPath.includes('GenerateContent')) {
+                                let snifferStream = null;
+                                if (proxyRes.headers['content-encoding'] === 'gzip') {
+                                    snifferStream = zlib.createGunzip();
+                                } else if (proxyRes.headers['content-encoding'] === 'deflate') {
+                                    snifferStream = zlib.createInflate();
+                                } else if (proxyRes.headers['content-encoding'] === 'br') {
+                                    snifferStream = zlib.createBrotliDecompress();
+                                } else {
+                                    snifferStream = new PassThrough();
                                 }
-                            });
+                                
+                                // 忽略解压错误，发生错误时直接丢弃旁路处理
+                                snifferStream.on('error', () => {
+                                    snifferStream = null;
+                                });
 
-                            snifferStream.on('end', () => {
-                                if (proxyRes.statusCode === 200 && targetPath.includes('GenerateContent')) {
+                                const maxWindowSize = 8192; // 8KB 足够容纳 usageMetadata
+                                let tailBuffer = '';
+                                snifferStream.on('data', (chunk) => {
+                                    tailBuffer += chunk.toString('utf8');
+                                    if (tailBuffer.length > maxWindowSize) {
+                                        tailBuffer = tailBuffer.substring(tailBuffer.length - maxWindowSize);
+                                    }
+                                });
+
+                                snifferStream.on('end', () => {
                                     try {
                                         const promptMatch = tailBuffer.match(/"promptTokenCount":\s*(\d+)/g);
                                         const candidateMatch = tailBuffer.match(/"candidatesTokenCount":\s*(\d+)/g);
@@ -588,9 +605,17 @@ class ProxyEngine extends EventEmitter {
                                             this.emit('log', `📊 [${currentModel}] Usage: ${inTokens} In | ${outTokens} Out | ${cachedTokens} Cached (Hit rate: ${((cachedTokens/inTokens)*100).toFixed(1)}%)`);
                                         }
                                     } catch (err) {}
-                                }
-                                logRequestToTracker(proxyRes.statusCode);
-                            });
+                                    logRequestToTracker(proxyRes.statusCode);
+                                });
+
+                                // 无背压地将数据塞入嗅探器
+                                proxyRes.on('data', (chunk) => {
+                                    if (snifferStream) snifferStream.write(chunk);
+                                });
+                                proxyRes.on('end', () => {
+                                    if (snifferStream) snifferStream.end();
+                                });
+                            }
 
                             resolve({ isRetryable: false, proxyRes: clientStream });
                         });
