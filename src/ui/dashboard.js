@@ -1477,18 +1477,22 @@ function switchView(viewName) {
     const viewDashboard = document.getElementById('view-dashboard');
     const viewAccounts = document.getElementById('view-accounts');
     const viewSettings = document.getElementById('view-settings');
+    const viewPackets = document.getElementById('view-packets');
     const navDashboard = document.getElementById('nav-dashboard');
     const navAccounts = document.getElementById('nav-accounts');
     const navSettings = document.getElementById('nav-settings');
+    const navPackets = document.getElementById('nav-packets');
 
-    if (!viewDashboard || !viewAccounts || !viewSettings || !navDashboard || !navAccounts || !navSettings) {
+    if (!viewDashboard || !viewAccounts || !viewSettings || !viewPackets || !navDashboard || !navAccounts || !navSettings || !navPackets) {
         console.warn('[switchView] Warning: DOM navigation or view elements not found:', {
             viewDashboard: !viewDashboard ? 'MISSING' : 'OK',
             viewAccounts: !viewAccounts ? 'MISSING' : 'OK',
             viewSettings: !viewSettings ? 'MISSING' : 'OK',
+            viewPackets: !viewPackets ? 'MISSING' : 'OK',
             navDashboard: !navDashboard ? 'MISSING' : 'OK',
             navAccounts: !navAccounts ? 'MISSING' : 'OK',
-            navSettings: !navSettings ? 'MISSING' : 'OK'
+            navSettings: !navSettings ? 'MISSING' : 'OK',
+            navPackets: !navPackets ? 'MISSING' : 'OK'
         });
         return;
     }
@@ -1497,6 +1501,8 @@ function switchView(viewName) {
         viewDashboard.classList.remove('hidden');
         viewAccounts.classList.add('hidden');
         viewSettings.classList.add('hidden');
+        viewPackets.classList.add('hidden');
+        
         navDashboard.classList.add('border-b-2', 'border-primary');
         navDashboard.classList.remove('text-outline');
         navDashboard.classList.add('text-primary', 'dark:text-primary-fixed-dim');
@@ -1505,6 +1511,8 @@ function switchView(viewName) {
         navAccounts.classList.add('text-outline');
         navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
         navSettings.classList.add('text-outline');
+        navPackets.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navPackets.classList.add('text-outline');
         
         updateAggregateQuotaUI();
     } else if (viewName === 'accounts') {
@@ -1512,6 +1520,7 @@ function switchView(viewName) {
         viewAccounts.classList.remove('hidden');
         viewAccounts.classList.add('flex');
         viewSettings.classList.add('hidden');
+        viewPackets.classList.add('hidden');
         
         navAccounts.classList.add('border-b-2', 'border-primary');
         navAccounts.classList.remove('text-outline');
@@ -1521,11 +1530,14 @@ function switchView(viewName) {
         navDashboard.classList.add('text-outline');
         navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
         navSettings.classList.add('text-outline');
+        navPackets.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navPackets.classList.add('text-outline');
     } else if (viewName === 'settings') {
         viewDashboard.classList.add('hidden');
         viewAccounts.classList.add('hidden');
         viewSettings.classList.remove('hidden');
         viewSettings.classList.add('flex');
+        viewPackets.classList.add('hidden');
         
         navSettings.classList.add('border-b-2', 'border-primary');
         navSettings.classList.remove('text-outline');
@@ -1535,9 +1547,36 @@ function switchView(viewName) {
         navDashboard.classList.add('text-outline');
         navAccounts.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
         navAccounts.classList.add('text-outline');
+        navPackets.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navPackets.classList.add('text-outline');
 
         // Fetch directory paths when settings tab is selected
         refreshDataDir();
+    } else if (viewName === 'packets') {
+        viewDashboard.classList.add('hidden');
+        viewAccounts.classList.add('hidden');
+        viewSettings.classList.add('hidden');
+        viewPackets.classList.remove('hidden');
+        viewPackets.classList.add('flex');
+
+        navPackets.classList.add('border-b-2', 'border-primary');
+        navPackets.classList.remove('text-outline');
+        navPackets.classList.add('text-primary', 'dark:text-primary-fixed-dim');
+
+        navDashboard.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navDashboard.classList.add('text-outline');
+        navAccounts.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navAccounts.classList.add('text-outline');
+        navSettings.classList.remove('border-b-2', 'border-primary', 'text-primary', 'dark:text-primary-fixed-dim');
+        navSettings.classList.add('text-outline');
+
+        // 切换到抓包选项卡时，自动加载包数据与刷新分析账号下拉框
+        if (typeof refreshPacketsList === 'function') {
+            refreshPacketsList();
+        }
+        if (typeof updateAnalyzeAccountSelect === 'function') {
+            updateAnalyzeAccountSelect();
+        }
     }
 }
 
@@ -2049,6 +2088,27 @@ function getRelativeResetTime(resetTime) {
     }
 }
 
+function formatCooldownTime(cooldownTime) {
+    try {
+        const now = new Date();
+        const target = new Date(cooldownTime);
+        const isToday = now.getFullYear() === target.getFullYear() &&
+                        now.getMonth() === target.getMonth() &&
+                        now.getDate() === target.getDate();
+        
+        const timeStr = target.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        if (isToday) {
+            return timeStr;
+        } else {
+            const month = target.getMonth() + 1;
+            const date = target.getDate();
+            return `${month}月${date}日 ${timeStr}`;
+        }
+    } catch (e) {
+        return new Date(cooldownTime).toLocaleString();
+    }
+}
+
 function renderQuotaBars(containerEl, buckets, cooldowns = {}) {
     containerEl.innerHTML = '';
     if (!buckets || buckets.length === 0) {
@@ -2098,7 +2158,7 @@ function renderQuotaBars(containerEl, buckets, cooldowns = {}) {
             
             let cooldownBadge = '';
             if (isCategoryCooling) {
-                const dateStr = new Date(categoryCooldownUntil).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                const dateStr = formatCooldownTime(categoryCooldownUntil);
                 cooldownBadge = `<span class="px-1 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[8px] font-bold border border-amber-500/20">${dateStr} 恢复</span>`;
             }
 
@@ -2311,7 +2371,7 @@ function renderAccounts(accounts) {
         const statusBadge = document.createElement('div');
         if (isOverallCooling) {
             statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-900/30 dark:text-amber-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
-            const dateStr = new Date(maxCooldownTime).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+            const dateStr = formatCooldownTime(maxCooldownTime);
             statusBadge.innerHTML = `<span class="material-symbols-outlined text-[12px]">hourglass_empty</span> 冷静中 (${dateStr}恢复)`;
         } else {
             statusBadge.className = 'flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-0.5 rounded text-nowrap self-start flex-shrink-0';
@@ -2321,6 +2381,68 @@ function renderAccounts(accounts) {
         header.appendChild(info);
         header.appendChild(statusBadge);
         
+        // ---- AI Credit Section ----
+        const creditSection = document.createElement('div');
+        creditSection.className = 'flex flex-col gap-1.5 border-t border-outline-variant/20 pt-3';
+        
+        const creditHeader = document.createElement('div');
+        creditHeader.className = 'flex justify-between items-center';
+        
+        const creditTitle = document.createElement('span');
+        creditTitle.className = 'text-[11px] font-semibold text-outline dark:text-outline-variant';
+        creditTitle.textContent = 'AI 积分 (AI Credit)';
+        
+        const creditValue = document.createElement('span');
+        creditValue.className = 'text-[11px] font-bold text-on-surface dark:text-white font-data-mono';
+        const creditVal = typeof acc.credits === 'number' ? `$${acc.credits.toFixed(2)}` : '未加载';
+        creditValue.textContent = creditVal;
+        
+        creditHeader.appendChild(creditTitle);
+        creditHeader.appendChild(creditValue);
+        creditSection.appendChild(creditHeader);
+        
+        // Overages Toggle Button
+        const overagesToggleWrapper = document.createElement('div');
+        overagesToggleWrapper.className = 'flex items-center justify-between text-[11px] mt-1.5 select-none cursor-pointer';
+        
+        const overagesSwitchId = `overagesToggle-${acc.id}`;
+        const isOveragesChecked = acc.enableOverages === true;
+        overagesToggleWrapper.innerHTML = `
+            <span class="text-outline dark:text-outline-variant">使用积分抵扣超额度部分 (AI Credit Overages)</span>
+            <div class="relative inline-block w-8 align-middle transition duration-200 ease-in flex-shrink-0 ml-2">
+                <input class="toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out" 
+                    id="${overagesSwitchId}" type="checkbox" ${isOveragesChecked ? 'checked' : ''}/>
+                <label class="toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer" for="${overagesSwitchId}"></label>
+            </div>
+        `;
+        
+        const overagesCheckbox = overagesToggleWrapper.querySelector('input');
+        const overagesLabel = overagesToggleWrapper.querySelector('label');
+        
+        overagesCheckbox.addEventListener('change', (e) => {
+            const enabled = e.target.checked;
+            ipcRenderer.send('accounts:toggle-overages', acc.id, enabled);
+            acc.enableOverages = enabled; // Update local state directly for immediate aggregation update
+            if (enabled) {
+                overagesCheckbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+                overagesLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-primary cursor-pointer';
+            } else {
+                overagesCheckbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+                overagesLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer';
+            }
+            updateAggregateQuotaUI();
+        });
+        
+        if (isOveragesChecked) {
+            overagesCheckbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+            overagesLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-primary cursor-pointer';
+        } else {
+            overagesCheckbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+            overagesLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer';
+        }
+        
+        creditSection.appendChild(overagesToggleWrapper);
+
         // ---- Quota Section ----
         const quotaSection = document.createElement('div');
         quotaSection.className = 'flex flex-col gap-2 border-t border-outline-variant/20 pt-3';
@@ -2365,6 +2487,7 @@ function renderAccounts(accounts) {
         `;
         
         const checkbox = toggleWrapper.querySelector('input');
+        const accLabel = toggleWrapper.querySelector('label');
         const labelText = toggleWrapper.querySelector('span');
         
         checkbox.addEventListener('change', (e) => {
@@ -2373,11 +2496,13 @@ function renderAccounts(accounts) {
             acc.enabled = enabled; // Update local state directly for immediate aggregation update
             if (enabled) {
                 checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+                accLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-primary cursor-pointer';
                 labelText.className = 'text-[11px] font-bold text-emerald-500';
                 labelText.textContent = '启用中';
                 card.classList.remove('opacity-60');
             } else {
                 checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+                accLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer';
                 labelText.className = 'text-[11px] font-bold text-outline';
                 labelText.textContent = '已停用';
                 card.classList.add('opacity-60');
@@ -2389,8 +2514,10 @@ function renderAccounts(accounts) {
         if (!isChecked) {
             card.classList.add('opacity-60');
             checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-outline-variant appearance-none cursor-pointer translate-x-0 transition-transform duration-200 ease-in-out';
+            accLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-outline-variant/50 dark:bg-white/10 cursor-pointer';
         } else {
             checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
+            accLabel.className = 'toggle-label block overflow-hidden h-4 rounded-full bg-primary cursor-pointer';
         }
         
         const btnDownload = document.createElement('button');
@@ -2419,6 +2546,7 @@ function renderAccounts(accounts) {
         footer.appendChild(rightGroup);
         
         card.appendChild(header);
+        card.appendChild(creditSection);
         card.appendChild(quotaSection);
         card.appendChild(footer);
         accountsList.appendChild(card);
@@ -3079,6 +3207,282 @@ async function refreshAllAccountsQuotas() {
             const success = await ipcRenderer.invoke('retry-error-logs:export');
             if (success) {
                 alert('日志成功导出！');
+            }
+        });
+    }
+
+    // ==========================================
+    // --- 抓包日志及 AI 分析功能前端交互逻辑 ---
+    // ==========================================
+    let packetsList = [];
+    let selectedPacket = null;
+    let generatedDocContent = '';
+
+    const packetListContainer = document.getElementById('packetListContainer');
+    const packetCountBadge = document.getElementById('packetCountBadge');
+    const packetDetailsPlaceholder = document.getElementById('packetDetailsPlaceholder');
+    const packetDetailsContainer = document.getElementById('packetDetailsContainer');
+    const btnClearPackets = document.getElementById('btnClearPackets');
+
+    const selectedPacketMethod = document.getElementById('selectedPacketMethod');
+    const selectedPacketStatusCode = document.getElementById('selectedPacketStatusCode');
+    const selectedPacketUrl = document.getElementById('selectedPacketUrl');
+    const selectedPacketReqHeaders = document.getElementById('selectedPacketReqHeaders');
+    const selectedPacketReqBody = document.getElementById('selectedPacketReqBody');
+    const selectedPacketResHeaders = document.getElementById('selectedPacketResHeaders');
+    const selectedPacketResBody = document.getElementById('selectedPacketResBody');
+
+    const packetAnalyzeAccountSelect = document.getElementById('packetAnalyzeAccountSelect');
+    const btnStartPacketAnalyze = document.getElementById('btnStartPacketAnalyze');
+    const btnDownloadPacketDoc = document.getElementById('btnDownloadPacketDoc');
+    const packetDocPreviewContainer = document.getElementById('packetDocPreviewContainer');
+    const packetDocPreviewText = document.getElementById('packetDocPreviewText');
+    const btnCopyGeneratedDoc = document.getElementById('btnCopyGeneratedDoc');
+
+    const packetAnalyzeLoading = document.getElementById('packetAnalyzeLoading');
+    const packetAnalyzeProgressMsg = document.getElementById('packetAnalyzeProgressMsg');
+
+    const btnCopyReqBody = document.getElementById('btnCopyReqBody');
+    const btnCopyResBody = document.getElementById('btnCopyResBody');
+
+    // 复制 DOM 元素内容的辅助方法
+    function copyElementText(elementId) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const text = el.textContent || el.value;
+        if (!text) {
+            alert('没有可以复制的内容');
+            return;
+        }
+        navigator.clipboard.writeText(text).then(() => {
+            alert('复制成功！');
+        }).catch(() => {
+            // 后备方法
+            try {
+                el.select();
+                document.execCommand('copy');
+                alert('复制成功！');
+            } catch (e) {
+                alert('复制失败，请手动选择复制。');
+            }
+        });
+    }
+    window.copyElementText = copyElementText;
+
+    // 复制生成的文档
+    if (btnCopyGeneratedDoc) {
+        btnCopyGeneratedDoc.addEventListener('click', () => {
+            if (generatedDocContent) {
+                navigator.clipboard.writeText(generatedDocContent).then(() => {
+                    alert('文档内容已复制到剪贴板！');
+                }).catch(() => {
+                    alert('复制失败，请在文本框内手动全选复制。');
+                });
+            }
+        });
+    }
+
+    // 格式化 JSON 的辅助方法
+    function formatJsonText(text) {
+        if (!text) return '';
+        if (typeof text === 'object') return JSON.stringify(text, null, 2);
+        try {
+            return JSON.stringify(JSON.parse(text), null, 2);
+        } catch (e) {
+            return text;
+        }
+    }
+
+    // 渲染已抓取的接口列表
+    async function refreshPacketsList() {
+        if (!packetListContainer) return;
+        try {
+            packetsList = await ipcRenderer.invoke('packet:get-all');
+        } catch (e) {
+            console.error('Failed to get packets:', e);
+            packetsList = [];
+        }
+
+        if (packetCountBadge) {
+            packetCountBadge.textContent = `${packetsList.length} 个接口`;
+        }
+
+        if (packetsList.length === 0) {
+            packetListContainer.innerHTML = `<div class="text-center py-12 text-outline text-[13px]">暂无已抓取的接口包</div>`;
+            if (packetDetailsPlaceholder) packetDetailsPlaceholder.classList.remove('hidden');
+            if (packetDetailsContainer) packetDetailsContainer.classList.add('hidden');
+            selectedPacket = null;
+            return;
+        }
+
+        // 渲染列表项
+        packetListContainer.innerHTML = packetsList.map(p => {
+            const isSelected = selectedPacket && selectedPacket.id === p.id;
+            const methodColor = p.method === 'POST' ? 'text-primary' : 'text-emerald-600';
+            const selectedClass = isSelected ? 'bg-primary/10 border-primary/50 dark:bg-primary/20 dark:border-primary' : 'border-outline-variant/20 hover:bg-slate-50 dark:hover:bg-white/5';
+            
+            return `
+                <div class="p-3 border rounded-lg cursor-pointer transition-all flex flex-col gap-1.5 ${selectedClass}" onclick="window.selectPacketItem('${p.id}')">
+                    <div class="flex justify-between items-center">
+                        <span class="font-data-mono font-bold text-[12px] ${methodColor}">${p.method}</span>
+                        <span class="text-[10px] text-outline font-medium">${p.timestamp}</span>
+                    </div>
+                    <div class="text-[12px] font-semibold text-slate-700 dark:text-slate-200 truncate break-all" title="${p.host}${p.path}">
+                        ${p.path}
+                    </div>
+                    <div class="text-[10px] text-outline truncate">
+                        ${p.host}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+    window.refreshPacketsList = refreshPacketsList;
+
+    // 选中某个接口包
+    window.selectPacketItem = (id) => {
+        selectedPacket = packetsList.find(p => p.id === id);
+        refreshPacketsList(); // 重新渲染列表以更新选中状态高亮
+
+        if (!selectedPacket) {
+            if (packetDetailsPlaceholder) packetDetailsPlaceholder.classList.remove('hidden');
+            if (packetDetailsContainer) packetDetailsContainer.classList.add('hidden');
+            return;
+        }
+
+        if (packetDetailsPlaceholder) packetDetailsPlaceholder.classList.add('hidden');
+        if (packetDetailsContainer) packetDetailsContainer.classList.remove('hidden');
+
+        // 填充详情
+        if (selectedPacketMethod) {
+            selectedPacketMethod.classList.remove('hidden');
+            selectedPacketMethod.textContent = selectedPacket.method;
+        }
+        if (selectedPacketStatusCode) {
+            selectedPacketStatusCode.classList.remove('hidden');
+            selectedPacketStatusCode.textContent = selectedPacket.statusCode;
+            if (selectedPacketStatusCode.textContent.startsWith('2')) {
+                selectedPacketStatusCode.className = 'font-bold px-2 py-0.5 text-[11px] rounded bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400';
+            } else {
+                selectedPacketStatusCode.className = 'font-bold px-2 py-0.5 text-[11px] rounded bg-rose-50 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400';
+            }
+        }
+        if (selectedPacketUrl) selectedPacketUrl.textContent = selectedPacket.url;
+        if (selectedPacketReqHeaders) selectedPacketReqHeaders.textContent = JSON.stringify(selectedPacket.reqHeaders, null, 2);
+        if (selectedPacketReqBody) selectedPacketReqBody.textContent = formatJsonText(selectedPacket.reqBody);
+        if (selectedPacketResHeaders) selectedPacketResHeaders.textContent = JSON.stringify(selectedPacket.resHeaders, null, 2);
+        if (selectedPacketResBody) selectedPacketResBody.textContent = formatJsonText(selectedPacket.resBody);
+    };
+
+    // 复制 Body 事件监听
+    if (btnCopyReqBody) {
+        btnCopyReqBody.addEventListener('click', () => copyElementText('selectedPacketReqBody'));
+    }
+    if (btnCopyResBody) {
+        btnCopyResBody.addEventListener('click', () => copyElementText('selectedPacketResBody'));
+    }
+
+    // 刷新分析账号选择列表
+    function updateAnalyzeAccountSelect() {
+        if (!packetAnalyzeAccountSelect) return;
+        
+        const enabledAccounts = (currentAccountsList || []).filter(a => a.enabled);
+        
+        const placeholder = `<option value="">请选择分析账号...</option>`;
+        if (enabledAccounts.length === 0) {
+            packetAnalyzeAccountSelect.innerHTML = placeholder + `<option value="" disabled>无可用账号 (请先在账号池登录/启用账号)</option>`;
+            return;
+        }
+
+        packetAnalyzeAccountSelect.innerHTML = placeholder + enabledAccounts.map(a => {
+            const tierStr = a.tier ? ` [${a.tier}]` : '';
+            return `<option value="${a.id}">${a.email}${tierStr}</option>`;
+        }).join('');
+    }
+    window.updateAnalyzeAccountSelect = updateAnalyzeAccountSelect;
+
+    // 清空接口列表
+    if (btnClearPackets) {
+        btnClearPackets.addEventListener('click', () => {
+            if (confirm('确定要清空所有已抓取的包吗？这不可恢复！')) {
+                ipcRenderer.send('packet:clear');
+                selectedPacket = null;
+                generatedDocContent = '';
+                if (packetDocPreviewContainer) packetDocPreviewContainer.classList.add('hidden');
+                if (btnDownloadPacketDoc) {
+                    btnDownloadPacketDoc.disabled = true;
+                }
+                refreshPacketsList();
+            }
+        });
+    }
+
+    // 监听代理服务推送的新包通知
+    ipcRenderer.on('packet:new', (event, packet) => {
+        const viewPackets = document.getElementById('view-packets');
+        if (viewPackets && !viewPackets.classList.contains('hidden')) {
+            refreshPacketsList();
+        }
+    });
+
+    // 一键 AI 分析接口文档
+    if (btnStartPacketAnalyze) {
+        btnStartPacketAnalyze.addEventListener('click', async () => {
+            if (packetsList.length === 0) {
+                alert('当前没有已抓取的接口包！请先让 IDE 发起请求拦截。');
+                return;
+            }
+
+            const accId = packetAnalyzeAccountSelect.value;
+            if (!accId) {
+                alert('请先选择一个用于分析的 AI 账号！');
+                return;
+            }
+
+            if (packetAnalyzeLoading) packetAnalyzeLoading.classList.remove('hidden');
+            if (packetAnalyzeProgressMsg) packetAnalyzeProgressMsg.textContent = '正在连接 Gemini API 服务端...';
+
+            try {
+                if (packetAnalyzeProgressMsg) packetAnalyzeProgressMsg.textContent = '正在组织报文并调用 Gemini-2.5-Flash-Lite...';
+                
+                const markdown = await ipcRenderer.invoke('packet:analyze', accId);
+                
+                generatedDocContent = markdown;
+
+                if (packetDocPreviewText) {
+                    packetDocPreviewText.value = markdown;
+                }
+                if (packetDocPreviewContainer) {
+                    packetDocPreviewContainer.classList.remove('hidden');
+                    packetDocPreviewContainer.scrollIntoView({ behavior: 'smooth' });
+                }
+
+                if (btnDownloadPacketDoc) {
+                    btnDownloadPacketDoc.disabled = false;
+                }
+                
+                setTimeout(() => {
+                    if (packetAnalyzeLoading) packetAnalyzeLoading.classList.add('hidden');
+                }, 500);
+
+            } catch (err) {
+                if (packetAnalyzeLoading) packetAnalyzeLoading.classList.add('hidden');
+                alert(`分析失败: ${err.message}`);
+            }
+        });
+    }
+
+    // 一键下载接口文档
+    if (btnDownloadPacketDoc) {
+        btnDownloadPacketDoc.addEventListener('click', async () => {
+            if (!generatedDocContent) {
+                alert('没有生成的文档可供下载');
+                return;
+            }
+
+            const success = await ipcRenderer.invoke('packet:download', generatedDocContent);
+            if (success) {
+                alert('接口文档成功保存！');
             }
         });
     }

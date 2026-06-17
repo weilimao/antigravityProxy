@@ -19,6 +19,31 @@ const OAUTH_HOST = 'oauth2.googleapis.com';
 const CLIENT_ID = credentials.gemini_cli.client_id;
 const CLIENT_SECRET = credentials.gemini_cli.client_secret;
 
+const tokenRefreshPromises = {};
+
+function parseCredits(rawCredits) {
+    if (rawCredits === null || rawCredits === undefined) return 0;
+    
+    // 如果是数组，递归解析第一个具有 creditAmount 的元素
+    if (Array.isArray(rawCredits)) {
+        if (rawCredits.length === 0) return 0;
+        const first = rawCredits[0];
+        if (first && first.creditAmount !== undefined) {
+            return parseCredits(first.creditAmount);
+        }
+        return 0;
+    }
+    
+    if (typeof rawCredits === 'number') return rawCredits;
+    if (typeof rawCredits === 'object') {
+        const units = parseFloat(rawCredits.units || 0);
+        const nanos = parseFloat(rawCredits.nanos || 0);
+        return units + (nanos / 1000000000);
+    }
+    const val = parseFloat(rawCredits);
+    return isNaN(val) ? 0 : val;
+}
+
 /** 通用 HTTPS POST → JSON */
 function postJson(hostname, path, body, headers = {}) {
     return new Promise((resolve, reject) => {
@@ -57,34 +82,50 @@ function postJson(hostname, path, body, headers = {}) {
 
 /** 用 refresh_token 换新的 access_token */
 async function refreshToken(account) {
-    let clientId = CLIENT_ID;
-    let clientSecret = CLIENT_SECRET;
-
-    if (account.provider === 'antigravity') {
-        clientId = credentials.antigravity.client_id;
-        clientSecret = credentials.antigravity.client_secret;
-    } else if (account.provider === 'project') {
-        // 项目账号使用官方 Client ID 登录，刷新时必须使用对应的凭证
-        clientId = 'moc.tnetnocresuelgoog.sppa.hlb5c862doc6vo23caiugt3bjj1crt63-250919453488'.split('').reverse().join('');
-        clientSecret = 'XstZ0RwMKxY-jdTQ0CDWR7FpWQY9-XPSCOG'.split('').reverse().join('');
+    const accountId = account.id || account.email || 'default';
+    if (tokenRefreshPromises[accountId]) {
+        console.log(`[QuotaService] Waiting for ongoing token refresh for account: ${account.email || accountId}`);
+        return tokenRefreshPromises[accountId];
     }
 
-    const body = new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: account.refresh_token,
-    }).toString();
+    const promise = (async () => {
+        let clientId = CLIENT_ID;
+        let clientSecret = CLIENT_SECRET;
 
-    const { status, body: resp } = await postJson(
-        OAUTH_HOST, '/token', body,
-        { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
-    );
+        if (account.provider === 'antigravity') {
+            clientId = credentials.antigravity.client_id;
+            clientSecret = credentials.antigravity.client_secret;
+        } else if (account.provider === 'project') {
+            // 项目账号使用官方 Client ID 登录，刷新时必须使用对应的凭证
+            clientId = 'moc.tnetnocresuelgoog.sppa.hlb5c862doc6vo23caiugt3bjj1crt63-250919453488'.split('').reverse().join('');
+            clientSecret = 'XstZ0RwMKxY-jdTQ0CDWR7FpWQY9-XPSCOG'.split('').reverse().join('');
+        }
 
-    if (status !== 200 || !resp.access_token) {
-        throw new Error('Token refresh failed: ' + (resp.error_description || resp.error || status));
+        const body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            grant_type: 'refresh_token',
+            refresh_token: account.refresh_token,
+        }).toString();
+
+        const { status, body: resp } = await postJson(
+            OAUTH_HOST, '/token', body,
+            { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+        );
+
+        if (status !== 200 || !resp.access_token) {
+            throw new Error('Token refresh failed: ' + (resp.error_description || resp.error || status));
+        }
+        return resp.access_token;
+    })();
+
+    tokenRefreshPromises[accountId] = promise;
+    try {
+        const token = await promise;
+        return token;
+    } finally {
+        delete tokenRefreshPromises[accountId];
     }
-    return resp.access_token;
 }
 
 /** Step 1: loadCodeAssist 获取 project */
@@ -200,8 +241,15 @@ async function loadCodeAssist(accessToken, isAntigravity) {
         }
     }
 
+    let credits = null;
+    if (resp.paidTier && resp.paidTier.availableCredits !== undefined) {
+        credits = parseCredits(resp.paidTier.availableCredits);
+    } else if (resp.availableCredits !== undefined) {
+        credits = parseCredits(resp.availableCredits);
+    }
+
     if (!projectId) throw new Error('No project in loadCodeAssist response');
-    return { projectId, tier };
+    return { projectId, tier, credits };
 }
 
 /** Step 2: retrieveUserQuota / retrieveUserQuotaSummary 获取 buckets */
@@ -316,7 +364,8 @@ async function retrieveUserQuota(accessToken, project, isAntigravity) {
             return resp.buckets;
         }
     } catch (err) {
-        console.error('[QuotaService] Live quota fetch failed, falling back to mock:', err.message);
+        console.error('[QuotaService] Live quota fetch failed:', err.message);
+        throw err;
     }
 
     // Fallback mock quota for Antigravity
@@ -486,12 +535,14 @@ async function fetchQuota(account, accountManager) {
             tier: 'Project Pay-As-You-Go',
             buckets: [
                 { modelId: 'Weekly Limit', group: 'Gemini Models', tokenType: 'REQUESTS', remainingFraction: 1, remainPercent: 100 }
-            ]
+            ],
+            credits: null
         };
     }
 
     let token = account.access_token;
     const isAntigravity = account.provider === 'antigravity';
+    let credits = null;
 
     try {
         // Step 1: 获取 project（如果报错，尝试刷新 token 并继续）
@@ -501,6 +552,7 @@ async function fetchQuota(account, accountManager) {
             const loadRes = await loadCodeAssist(token, isAntigravity);
             project = loadRes.projectId;
             tier = loadRes.tier;
+            credits = loadRes.credits;
         } catch (err) {
             // 如果 token 错误或接口报错，且有 refresh_token，尝试刷新一次
             if (account.refresh_token) {
@@ -511,11 +563,27 @@ async function fetchQuota(account, accountManager) {
                     const loadRes = await loadCodeAssist(token, isAntigravity);
                     project = loadRes.projectId;
                     tier = loadRes.tier;
+                    credits = loadRes.credits;
                 } catch (refreshErr) {
-                    console.warn('[QuotaService] Failed to loadCodeAssist after token refresh, continuing with empty project:', refreshErr.message);
+                    console.warn('[QuotaService] Failed to loadCodeAssist after token refresh:', refreshErr.message);
+                    const errLower = refreshErr.message.toLowerCase();
+                    const isPermanent = errLower.includes('invalid_grant') || 
+                                       errLower.includes('invalid client') || 
+                                       errLower.includes('unauthorized_client') ||
+                                       errLower.includes('invalid_request') ||
+                                       errLower.includes('bad request');
+                    if (accountManager && isPermanent) {
+                        console.warn(`[QuotaService] Permanent token refresh failure for ${account.email}, disabling account.`);
+                        accountManager.updateAccountEnabled(account.id, false);
+                        if (global.addLogToBuffer) {
+                            global.addLogToBuffer(`❌ [账号池] 账号 ${account.email} 授权已失效，自动停用。请重新登录授权！`);
+                        }
+                    }
+                    throw refreshErr;
                 }
             } else {
-                console.warn('[QuotaService] loadCodeAssist failed and no refresh token available, continuing with empty project:', err.message);
+                console.warn('[QuotaService] loadCodeAssist failed and no refresh token available:', err.message);
+                throw err;
             }
         }
 
@@ -537,11 +605,14 @@ async function fetchQuota(account, accountManager) {
         // Step 2: 获取 quota buckets
         const rawBuckets = await retrieveUserQuota(token, project, isAntigravity);
         console.log(`[QuotaService] Raw buckets for Gemini CLI:`, rawBuckets);
-        return { buckets: parseBuckets(rawBuckets), tier };
+        if (accountManager && credits !== null) {
+            accountManager.updateAccountCredits(account.id, credits);
+        }
+        return { buckets: parseBuckets(rawBuckets), tier, credits };
 
     } catch (err) {
         console.error('[QuotaService] Error:', err.message);
-        return { error: err.message, buckets: [], tier: 'Standard' };
+        return { error: err.message, buckets: [], tier: 'Standard', credits: null };
     }
 }
 

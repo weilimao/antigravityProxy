@@ -301,6 +301,9 @@ app.whenReady().then(async () => {
     const retryErrorLogger = require('./src/core/retryErrorLogger');
     retryErrorLogger.updatePath(settings.getActiveDataDirectory());
 
+    const packetCapturer = require('./src/core/packetCapturer');
+    packetCapturer.updatePath(settings.getActiveDataDirectory());
+
     // 初始化计费配置的活跃路径
     const pricing = require('./src/core/pricing');
     pricing.init(settings.getActiveDataDirectory());
@@ -569,6 +572,14 @@ ipcMain.on('accounts:toggle-enabled', (event, id, enabled) => {
     }
 });
 
+ipcMain.on('accounts:toggle-overages', (event, id, enabled) => {
+    accountManager.updateAccountOverages(id, enabled);
+    const acc = accountManager.getAccountById(id);
+    if (acc) {
+        addLogToBuffer(`🔄 Account ${acc.email} AI Credit Overages is now ${enabled ? 'enabled' : 'disabled'}.`);
+    }
+});
+
 ipcMain.on('accounts:export-all', async (event) => {
     const accountExporter = require('./src/core/accountExporter');
     await accountExporter.exportAll(accountManager.accounts, mainWindow);
@@ -755,6 +766,9 @@ ipcMain.handle('settings:change-dir', async (event) => {
         
         const pricing = require('./src/core/pricing');
         pricing.updatePath(targetDir);
+
+        const packetCapturer = require('./src/core/packetCapturer');
+        packetCapturer.updatePath(targetDir);
 
         const sessionRouter = require('./src/core/sessionRouter');
         sessionRouter.updatePath(targetDir);
@@ -945,6 +959,42 @@ ipcMain.handle('retry-error-logs:export', async (event) => {
         return true;
     } catch (e) {
         console.error('[Main] Failed to export logs:', e);
+        return false;
+    }
+});
+
+// --- Packet Capture & Analysis IPC Channels ---
+ipcMain.handle('packet:get-all', () => {
+    const packetCapturer = require('./src/core/packetCapturer');
+    return packetCapturer.getPackets();
+});
+
+ipcMain.on('packet:clear', () => {
+    const packetCapturer = require('./src/core/packetCapturer');
+    packetCapturer.clearPackets();
+});
+
+ipcMain.handle('packet:analyze', async (event, accountId) => {
+    const packetCapturer = require('./src/core/packetCapturer');
+    return await packetCapturer.analyzePackets(accountId);
+});
+
+ipcMain.handle('packet:download', async (event, markdownContent) => {
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '保存 API 接口文档说明',
+        defaultPath: path.join(app.getPath('downloads'), 'api_documentation.md'),
+        filters: [
+            { name: 'Markdown Files', extensions: ['md'] }
+        ]
+    });
+
+    if (!filePath) return false;
+
+    try {
+        fs.writeFileSync(filePath, markdownContent, 'utf8');
+        return true;
+    } catch (e) {
+        console.error('[Main] Failed to save Markdown documentation:', e);
         return false;
     }
 });

@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const CONFIG_FILE_NAME = 'config.json';
-const DATA_FILES = ['accounts.json', 'stats.json', 'usage.json', 'pricing.json'];
+const DATA_FILES = ['accounts.json', 'stats.json', 'usage.json', 'pricing.json', 'captured_packets.json'];
 const DATA_DIRS = ['certs'];
 
 class SettingsManager {

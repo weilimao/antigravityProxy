@@ -40,6 +40,8 @@ class ProxyEngine extends EventEmitter {
         const settings = require('./src/core/settings');
         statsTracker.init(settings.getActiveDataDirectory());
         usageTracker.init(settings.getActiveDataDirectory());
+        const packetCapturer = require('./src/core/packetCapturer');
+        packetCapturer.init(settings.getActiveDataDirectory());
         this.stats = statsTracker.stats; // Expose reference for backward compatibility
     }
 
@@ -429,8 +431,8 @@ class ProxyEngine extends EventEmitter {
                                 return;
                             }
 
-                            // 429 Quota/Rate Limit Exhausted
-                            if (proxyRes.statusCode === 429 && !targetPath.includes('retrieveUserQuota')) {
+                            // 429/403/402 Quota, Rate Limit, Forbidden, or Payment Required
+                            if ((proxyRes.statusCode === 429 || proxyRes.statusCode === 403 || proxyRes.statusCode === 402) && !targetPath.includes('retrieveUserQuota')) {
                                 const resChunks = [];
                                 proxyRes.on('data', chunk => resChunks.push(chunk));
                                 proxyRes.on('end', () => {
@@ -450,16 +452,30 @@ class ProxyEngine extends EventEmitter {
                                         bodyStr = resBody.toString('utf8');
                                     }
 
-                                    const isQuotaError = bodyStr.includes('RESOURCE_EXHAUSTED') || 
-                                                         bodyStr.includes('quota') || 
-                                                         bodyStr.includes('exhausted') || 
-                                                         bodyStr.includes('limit') ||
-                                                         bodyStr.includes('MODEL_CAPACITY_EXHAUSTED');
+                                    const bodyStrLower = bodyStr.toLowerCase();
+                                    const isCreditExhausted = bodyStrLower.includes('credit') || 
+                                                              bodyStrLower.includes('balance') || 
+                                                              bodyStrLower.includes('overage') || 
+                                                              bodyStrLower.includes('insufficient');
 
-                                    if (isQuotaError) {
-                                        reject(new Error('QUOTA_EXHAUSTED'));
+                                    if (isCreditExhausted) {
+                                        reject(new Error('CREDITS_EXHAUSTED'));
                                     } else {
-                                        resolve({ isRetryable: false, proxyRes, bodyBuffer: resBody });
+                                        if (proxyRes.statusCode === 429) {
+                                            const isQuotaError = bodyStr.includes('RESOURCE_EXHAUSTED') || 
+                                                                 bodyStr.includes('quota') || 
+                                                                 bodyStr.includes('exhausted') || 
+                                                                 bodyStr.includes('limit') ||
+                                                                 bodyStr.includes('MODEL_CAPACITY_EXHAUSTED');
+
+                                            if (isQuotaError) {
+                                                reject(new Error('QUOTA_EXHAUSTED'));
+                                            } else {
+                                                resolve({ isRetryable: false, proxyRes, bodyBuffer: resBody });
+                                            }
+                                        } else {
+                                            resolve({ isRetryable: false, proxyRes, bodyBuffer: resBody });
+                                        }
                                     }
                                 });
                                 return;
@@ -554,6 +570,50 @@ class ProxyEngine extends EventEmitter {
                             
                             // 主链路：直接将原始响应流传输给客户端
                             proxyRes.pipe(clientStream);
+
+                            // --- 抓包日志拦截旁路 ---
+                            const packetCapturer = require('./src/core/packetCapturer');
+                            if (proxyRes.statusCode === 200 && (!isIgnoredTelemetry(targetPath) || targetPath.includes('loadCodeAssist')) && !packetCapturer.isCaptured(req.method, targetHost, targetPath)) {
+                                const encoding = proxyRes.headers['content-encoding'];
+                                const resChunks = [];
+                                proxyRes.on('data', (chunk) => {
+                                    resChunks.push(chunk);
+                                });
+                                proxyRes.on('end', () => {
+                                    const bodyBuffer = Buffer.concat(resChunks);
+                                    let decompressedBody = '';
+                                    try {
+                                        if (encoding === 'gzip') {
+                                            decompressedBody = zlib.gunzipSync(bodyBuffer).toString('utf8');
+                                        } else if (encoding === 'deflate') {
+                                            decompressedBody = zlib.inflateSync(bodyBuffer).toString('utf8');
+                                        } else if (encoding === 'br') {
+                                            decompressedBody = zlib.brotliDecompressSync(bodyBuffer).toString('utf8');
+                                        } else {
+                                            decompressedBody = bodyBuffer.toString('utf8');
+                                        }
+                                    } catch (decompErr) {
+                                        decompressedBody = bodyBuffer.toString('utf8');
+                                    }
+
+                                    const packet = packetCapturer.savePacket({
+                                        method: req.method,
+                                        host: targetHost,
+                                        path: targetPath,
+                                        reqHeaders: customHeaders,
+                                        reqBody: finalReqBody.toString('utf8'),
+                                        resHeaders: proxyRes.headers,
+                                        resBody: decompressedBody,
+                                        statusCode: proxyRes.statusCode
+                                    });
+
+                                    // 实时通过 IPC 通知主窗口有新包
+                                    if (global.mainWindow) {
+                                        global.mainWindow.webContents.send('packet:new', packet);
+                                    }
+                                });
+                            }
+                            // -------------------------
 
                             // 旁路链路：如果是 Gemini GenerateContent 接口且状态正常，才进行数据嗅探
                             // 完全解耦：不使用 pipe，避免解压器产生背压卡死主链路（如 Claude 长连接/SSE）
@@ -674,6 +734,7 @@ class ProxyEngine extends EventEmitter {
                         const isRetryableError = error.message === 'CAPACITY_EXHAUSTED' || 
                                                  error.message === 'QUOTA_EXHAUSTED' || 
                                                  error.message === 'TOKEN_EXPIRED' ||
+                                                 error.message === 'CREDITS_EXHAUSTED' ||
                                                  error.code === 'ECONNRESET' || 
                                                  error.code === 'ETIMEDOUT';
 
@@ -690,9 +751,69 @@ class ProxyEngine extends EventEmitter {
                                 this.emit('log', `🔑 [负载均衡] 账号 ${email} Token 自动刷新成功，即将发起重试...`);
                             } catch (refreshErr) {
                                 this.emit('log', `❌ [负载均衡] 账号 ${email} Token 自动刷新失败: ${refreshErr.message}`);
-                                // 刷新失败后，把这个账号放入短暂的冷静期，防止在剩下的重试次数里继续使用它
-                                accountManager.setAccountCooldown(accId, Date.now() + 2 * 60 * 1000, currentModel);
+                                const errLower = refreshErr.message.toLowerCase();
+                                const isPermanent = errLower.includes('invalid_grant') || 
+                                                   errLower.includes('invalid client') || 
+                                                   errLower.includes('unauthorized_client') ||
+                                                   errLower.includes('invalid_request') ||
+                                                   errLower.includes('bad request');
+                                if (isPermanent) {
+                                    this.emit('log', `❌ [负载均衡] 账号 ${email} 授权已永久失效，自动停用。`);
+                                    accountManager.updateAccountEnabled(accId, false);
+                                    if (global.addLogToBuffer) {
+                                        global.addLogToBuffer(`❌ [账号池] 账号 ${email} 授权已失效，自动停用。请重新登录授权！`);
+                                    }
+                                } else {
+                                    // 刷新失败后，把这个账号放入短暂的冷静期，防止在剩下的重试次数里继续使用它
+                                    accountManager.setAccountCooldown(accId, Date.now() + 2 * 60 * 1000, currentModel);
+                                }
                             }
+                        }
+
+                        // 积分耗尽触发冷静期隔离及积分归零
+                        if (lastUsedAccountObj && error.message === 'CREDITS_EXHAUSTED') {
+                            const accId = lastUsedAccountObj.id;
+                            const email = lastUsedAccountObj.email;
+                            const currentAccountObj = lastUsedAccountObj;
+
+                            this.emit('log', `❌ [负载均衡] 检测到账号 ${email} 积分已耗尽或积分不足。正在将积分设为 0 并重新隔离...`);
+                            
+                            // 1. 设置积分归零，使 enableOverages 绕过冷却的逻辑失效
+                            accountManager.updateAccountCredits(accId, 0);
+
+                            // 2. 立即标记冷静状态，回归常规冷静逻辑
+                            accountManager.setAccountCooldown(accId, Date.now() + 5 * 60 * 1000, currentModel);
+
+                            // 3. 异步获取真正的配额来修正冷静时间
+                            (async () => {
+                                try {
+                                    const quotaService = require('./src/core/quotaService');
+                                    const res = await quotaService.fetchQuota(currentAccountObj, accountManager);
+                                    let cooldownTime = null;
+                                    
+                                    if (res && res.buckets) {
+                                        const weeklyBuckets = res.buckets.filter(b => b.modelId && b.modelId.includes('Weekly'));
+                                        const exhaustedWeekly = weeklyBuckets.find(b => b.remainingFraction === 0 && b.resetTime);
+                                        if (exhaustedWeekly) {
+                                            cooldownTime = new Date(exhaustedWeekly.resetTime).getTime();
+                                            this.emit('log', `⏳ [负载均衡] 账号 ${email} 周额度空置，冷静期截止至 ${new Date(cooldownTime).toLocaleString()}`);
+                                        } else {
+                                            const fiveHourBuckets = res.buckets.filter(b => b.modelId && b.modelId.includes('Five Hour'));
+                                            const exhaustedFiveHour = fiveHourBuckets.find(b => b.remainingFraction === 0 && b.resetTime);
+                                            if (exhaustedFiveHour) {
+                                                cooldownTime = new Date(exhaustedFiveHour.resetTime).getTime();
+                                                this.emit('log', `⏳ [负载均衡] 账号 ${email} 5小时额度空置，冷静期截止至 ${new Date(cooldownTime).toLocaleString()}`);
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (cooldownTime) {
+                                        accountManager.setAccountCooldown(accId, cooldownTime, currentModel);
+                                    }
+                                } catch (e) {
+                                    console.error('[Engine] Cooldown fetch after credits exhaustion failed:', e.message);
+                                }
+                            })();
                         }
 
                         // 额度空置触发冷静期隔离

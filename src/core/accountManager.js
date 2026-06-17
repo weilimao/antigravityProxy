@@ -45,7 +45,9 @@ class AccountManager extends EventEmitter {
                         projectId: account.projectId || account.project_id || null,
                         projectLabel: account.projectLabel || account.project_label || '',
                         scopeType: provider === 'antigravity' ? 'account' : 'project',
-                        enabled: typeof account.enabled === 'boolean' ? account.enabled : true
+                        enabled: typeof account.enabled === 'boolean' ? account.enabled : true,
+                        enableOverages: account.enableOverages === true,
+                        credits: typeof account.credits === 'number' ? account.credits : null
                     };
                 });
                 this.poolMode = parsed.poolMode || false;
@@ -108,7 +110,9 @@ class AccountManager extends EventEmitter {
             scopeType: accountInfo.scopeType || (normalizedProjectId ? 'project' : 'account'),
             addedAt: new Date().toISOString(),
             tier: accountInfo.tier || 'Standard',
-            enabled: isEnabled
+            enabled: isEnabled,
+            enableOverages: accountInfo.enableOverages === true,
+            credits: typeof accountInfo.credits === 'number' ? accountInfo.credits : null
         };
 
         this.accounts.push(newAccount);
@@ -165,7 +169,9 @@ class AccountManager extends EventEmitter {
                 scopeType: accountInfo.scopeType || (normalizedProjectId ? 'project' : 'account'),
                 addedAt: accountInfo.addedAt || new Date().toISOString(),
                 tier: accountInfo.tier || 'Standard',
-                enabled: typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true
+                enabled: typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true,
+                enableOverages: accountInfo.enableOverages === true,
+                credits: typeof accountInfo.credits === 'number' ? accountInfo.credits : null
             };
 
             this.accounts.push(newAccount);
@@ -199,7 +205,9 @@ class AccountManager extends EventEmitter {
             cooldowns: a.cooldowns || {},
             cooldownUntil: a.cooldownUntil || null,
             tier: a.tier || 'Standard',
-            enabled: a.enabled !== false
+            enabled: a.enabled !== false,
+            enableOverages: a.enableOverages === true,
+            credits: typeof a.credits === 'number' ? a.credits : null
         }));
     }
 
@@ -214,6 +222,26 @@ class AccountManager extends EventEmitter {
         if (acc) {
             acc.access_token = newToken;
             this.saveAccounts(true);
+        }
+    }
+
+    /** 更新账号的积分（credits） */
+    updateAccountCredits(id, credits) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (acc && acc.credits !== credits) {
+            acc.credits = credits;
+            this.saveAccounts(true);
+            this.emit('accounts-updated', this.accounts);
+        }
+    }
+
+    /** 更新账号的积分超额抵扣开关 */
+    updateAccountOverages(id, enabled) {
+        const acc = this.accounts.find(a => a.id === id);
+        if (acc && acc.enableOverages !== enabled) {
+            acc.enableOverages = enabled;
+            this.saveAccounts(true);
+            this.emit('accounts-updated', this.accounts);
         }
     }
 
@@ -345,12 +373,13 @@ class AccountManager extends EventEmitter {
         }
 
         if (!isPool) {
-            // 单账号模式下，直接返回第一个可用（且不在冷静期）的账号
+            // 单账号模式下，直接返回第一个可用（且不在冷静期，或启用积分抵扣且有积分）的账号
             const category = this.getModelCategory(modelName);
             const now = Date.now();
             const account = activeAccounts[0];
             const cooldownUntil = account.cooldowns ? (account.cooldowns[category] || null) : account.cooldownUntil;
-            if (!cooldownUntil || now >= cooldownUntil) {
+            const hasOverages = account.enableOverages === true && typeof account.credits === 'number' && account.credits > 0;
+            if (!cooldownUntil || now >= cooldownUntil || hasOverages) {
                 return account;
             }
             return null;
@@ -368,18 +397,21 @@ class AccountManager extends EventEmitter {
                 ? (account.cooldowns[category] || null)
                 : account.cooldownUntil;
 
-            if (!cooldownUntil || now >= cooldownUntil) {
+            const hasOverages = account.enableOverages === true && typeof account.credits === 'number' && account.credits > 0;
+            if (!cooldownUntil || now >= cooldownUntil || hasOverages) {
                 let updated = false;
-                if (account.cooldowns && account.cooldowns[category]) {
-                    delete account.cooldowns[category];
-                    updated = true;
-                }
-                if (account.cooldownUntil && now >= account.cooldownUntil) {
-                    account.cooldownUntil = null;
-                    updated = true;
-                }
-                if (updated) {
-                    this.saveAccounts(true);
+                if (!cooldownUntil || now >= cooldownUntil) {
+                    if (account.cooldowns && account.cooldowns[category]) {
+                        delete account.cooldowns[category];
+                        updated = true;
+                    }
+                    if (account.cooldownUntil && now >= account.cooldownUntil) {
+                        account.cooldownUntil = null;
+                        updated = true;
+                    }
+                    if (updated) {
+                        this.saveAccounts(true);
+                    }
                 }
                 return account;
             }
@@ -439,7 +471,8 @@ class AccountManager extends EventEmitter {
             const cooldownUntil = a.cooldowns
                 ? (a.cooldowns[category] || null)
                 : a.cooldownUntil;
-            return !cooldownUntil || now >= cooldownUntil;
+            const hasOverages = a.enableOverages === true && typeof a.credits === 'number' && a.credits > 0;
+            return !cooldownUntil || now >= cooldownUntil || hasOverages;
         });
     }
 
