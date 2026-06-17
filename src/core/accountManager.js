@@ -116,11 +116,13 @@ class AccountManager extends EventEmitter {
         if (isEnabled) {
             const isAntigravity = normalizedProvider === 'antigravity';
             if (isAntigravity) {
-                this.accounts.forEach(a => {
-                    if (a.provider === 'antigravity' && a.id !== newId && a.enabled !== false) {
-                        a.enabled = false;
-                    }
-                });
+                if (!this.poolMode) {
+                    this.accounts.forEach(a => {
+                        if (a.provider === 'antigravity' && a.id !== newId && a.enabled !== false) {
+                            a.enabled = false;
+                        }
+                    });
+                }
             } else {
                 if (!this.projectPoolMode) {
                     this.accounts.forEach(a => {
@@ -133,6 +135,47 @@ class AccountManager extends EventEmitter {
         }
 
         this.saveAccounts();
+    }
+
+    importAccountsList(accountsList) {
+        let addedCount = 0;
+        accountsList.forEach(accountInfo => {
+            const normalizedEmail = accountInfo.email || 'Unknown Account';
+            const normalizedProvider = accountInfo.provider || 'unknown';
+            const normalizedProjectId = accountInfo.projectId || accountInfo.project_id || null;
+
+            // Remove existing duplicate (same email, provider and projectId)
+            this.accounts = this.accounts.filter((account) => {
+                const accountProjectId = account.projectId || account.project_id || null;
+                return !(
+                    account.email === normalizedEmail &&
+                    (account.provider || 'unknown') === normalizedProvider &&
+                    accountProjectId === normalizedProjectId
+                );
+            });
+
+            const newAccount = {
+                id: accountInfo.id || this._generateAccountId(),
+                email: normalizedEmail,
+                access_token: accountInfo.access_token,
+                refresh_token: accountInfo.refresh_token || null,
+                provider: normalizedProvider,
+                projectId: normalizedProjectId,
+                projectLabel: accountInfo.projectLabel || accountInfo.project_label || '',
+                scopeType: accountInfo.scopeType || (normalizedProjectId ? 'project' : 'account'),
+                addedAt: accountInfo.addedAt || new Date().toISOString(),
+                tier: accountInfo.tier || 'Standard',
+                enabled: typeof accountInfo.enabled === 'boolean' ? accountInfo.enabled : true
+            };
+
+            this.accounts.push(newAccount);
+            addedCount++;
+        });
+
+        if (addedCount > 0) {
+            this.saveAccounts();
+        }
+        return addedCount;
     }
 
     removeAccount(id) {

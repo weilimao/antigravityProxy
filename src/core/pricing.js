@@ -169,15 +169,32 @@ function getPricingForModel(modelName) {
  * @returns {number} calculated cost in USD
  */
 function calculateCost(modelName, inTokens, outTokens, cachedTokens = 0) {
+    return calculateCostBreakdown(modelName, inTokens, outTokens, cachedTokens).totalCost;
+}
+
+/**
+ * Calculates cost breakdown for input / output / cached tokens
+ * @param {string} modelName
+ * @param {number} inTokens Total prompt tokens (including cached)
+ * @param {number} outTokens Output tokens
+ * @param {number} cachedTokens Cached prompt tokens
+ * @returns {{inputCost:number, outputCost:number, cachedCost:number, totalCost:number, nonCachedIn:number}}
+ */
+function calculateCostBreakdown(modelName, inTokens, outTokens, cachedTokens = 0) {
     const pricing = getPricingForModel(modelName);
     const nonCachedIn = Math.max(0, inTokens - cachedTokens);
-    
-    // Stored pricing values are per 1 Million tokens, divide by 1M
-    const cost = (nonCachedIn * pricing.input / 1000000) + 
-                 (outTokens * pricing.output / 1000000) + 
-                 (cachedTokens * pricing.cached / 1000000);
-                 
-    return parseFloat(cost.toFixed(6));
+    const inputCost = parseFloat((nonCachedIn * pricing.input / 1000000).toFixed(6));
+    const outputCost = parseFloat((outTokens * pricing.output / 1000000).toFixed(6));
+    const cachedCost = parseFloat((cachedTokens * pricing.cached / 1000000).toFixed(6));
+    const totalCost = parseFloat((inputCost + outputCost + cachedCost).toFixed(6));
+
+    return {
+        inputCost,
+        outputCost,
+        cachedCost,
+        totalCost,
+        nonCachedIn
+    };
 }
 
 /**
@@ -230,6 +247,7 @@ module.exports = {
     init,
     updatePath,
     calculateCost,
+    calculateCostBreakdown,
     getPricingForModel,
     getAllPricing,
     updateModelPricing,

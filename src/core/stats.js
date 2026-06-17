@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { calculateCost, getPricingForModel } = require('./pricing');
+const usageTracker = require('./usageTracker');
 
 /**
  * 结构化截断请求 Body 字符串或 JSON 对象，避免大上下文爆内存和磁盘
@@ -255,7 +256,8 @@ class StatsTracker {
         return {
             stats: this.stats,
             trends: this.trends,
-            requests: this.requests
+            requests: this.requests,
+            usage: usageTracker.getPayload()
         };
     }
 

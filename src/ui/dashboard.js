@@ -4,6 +4,7 @@
 
 const { ipcRenderer, shell } = require('electron');
 const i18n = require('./src/shared/i18n');
+const usageDetails = require('./src/ui/usageDetails');
 
 // State Variables
 let currentLanguage = 'zh';
@@ -38,6 +39,7 @@ const statusText = document.getElementById('statusText');
 const certStatusBadge = document.getElementById('certStatusBadge');
 const btnInstallCert = document.getElementById('btnInstallCert');
 const btnUninstallCert = document.getElementById('btnUninstallCert');
+let certStatusRetryTimer = null;
 
 // Metrics Cards
 const valReqs = document.getElementById('valReqs');
@@ -89,6 +91,8 @@ const toggleEN = document.getElementById('toggleEN');
 const toggleTheme = document.getElementById('toggleTheme');
 const themeIcon = document.getElementById('themeIcon');
 const btnExportLogs = document.getElementById('btnExportLogs');
+
+usageDetails.init();
 
 // Format Numbers
 function formatCompactNumber(number) {
@@ -591,6 +595,21 @@ function updateCertUI(isInstalled, isProcessing = false) {
     }
 }
 
+function requestCertStatus() {
+    if (certStatusRetryTimer) {
+        clearTimeout(certStatusRetryTimer);
+        certStatusRetryTimer = null;
+    }
+    try {
+        ipcRenderer.send('cert-status');
+        certStatusRetryTimer = setTimeout(() => {
+            ipcRenderer.send('cert-status');
+        }, 1200);
+    } catch (e) {
+        console.error('[Dashboard] Failed to request cert status:', e);
+    }
+}
+
 // Filter and render logs table with pagination
 function renderLogsTable() {
     const dict = i18n[currentLanguage];
@@ -839,7 +858,7 @@ ipcRenderer.on('memory-stats-updated', (event, data) => {
 ipcRenderer.on('stats-updated', (event, payload) => {
     if (!payload) return;
 
-    const { stats, trends, requests } = payload;
+    const { stats, trends, requests, usage } = payload;
     trendsData = trends;
     allRequests = requests;
 
@@ -900,7 +919,12 @@ ipcRenderer.on('stats-updated', (event, payload) => {
     // 3. Render Model Stats Table
     modelsTableBody.innerHTML = '';
     const dict = i18n[currentLanguage];
-    const modelEntries = Object.entries(stats.models);
+    const modelEntries = Object.entries(stats.models).sort((a, b) => {
+        const totalA = (a[1].inTokens || 0) + (a[1].outTokens || 0);
+        const totalB = (b[1].inTokens || 0) + (b[1].outTokens || 0);
+        if (totalB !== totalA) return totalB - totalA;
+        return (b[1].reqs || 0) - (a[1].reqs || 0);
+    });
     
     if (modelEntries.length === 0) {
         modelsTableBody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-outline dark:text-outline-variant italic">${dict.noData}</td></tr>`;
@@ -930,6 +954,7 @@ ipcRenderer.on('stats-updated', (event, payload) => {
 
     // 4. Render Request Logs with pagination
     renderLogsTable();
+    usageDetails.render(usage);
 });
 
 // Appending raw logs to console tray
@@ -951,6 +976,10 @@ ipcRenderer.on('log', (event, log) => {
 
 // CA status check
 ipcRenderer.on('cert-status-res', (event, isInstalled) => {
+    if (certStatusRetryTimer) {
+        clearTimeout(certStatusRetryTimer);
+        certStatusRetryTimer = null;
+    }
     updateCertUI(isInstalled);
 });
 
@@ -962,6 +991,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initChartFilters();
     initPricingEvents();
     initAppVersion();
+    requestCertStatus();
 });
 
 // Details Modal Elements
@@ -1979,6 +2009,21 @@ poolModeToggle.addEventListener('change', (e) => {
     updateAggregateQuotaUI();
 });
 
+const btnExportAccounts = document.getElementById('btnExportAccounts');
+const btnImportAccounts = document.getElementById('btnImportAccounts');
+
+if (btnExportAccounts) {
+    btnExportAccounts.addEventListener('click', () => {
+        ipcRenderer.send('accounts:export-all');
+    });
+}
+
+if (btnImportAccounts) {
+    btnImportAccounts.addEventListener('click', () => {
+        ipcRenderer.send('accounts:import');
+    });
+}
+
 function getRelativeResetTime(resetTime) {
     try {
         const now = Date.now();
@@ -2348,6 +2393,14 @@ function renderAccounts(accounts) {
             checkbox.className = 'toggle-checkbox absolute block w-4 h-4 rounded-full bg-white border-2 border-primary appearance-none cursor-pointer translate-x-4 transition-transform duration-200 ease-in-out';
         }
         
+        const btnDownload = document.createElement('button');
+        btnDownload.className = 'text-[11px] font-medium text-primary hover:text-primary/80 hover:bg-primary/5 dark:hover:bg-primary/10 px-2 py-1 rounded transition-colors flex items-center gap-1 z-10 mr-1';
+        btnDownload.innerHTML = '<span class="material-symbols-outlined text-[14px]">download</span> 导出';
+        btnDownload.title = '导出该账号文件';
+        btnDownload.onclick = () => {
+            ipcRenderer.send('accounts:export-single', acc.id);
+        };
+
         const btnDelete = document.createElement('button');
         btnDelete.className = 'text-[11px] font-medium text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-1 rounded transition-colors flex items-center gap-1 z-10';
         btnDelete.innerHTML = '<span class="material-symbols-outlined text-[14px]">delete</span> 移除';
@@ -2357,8 +2410,13 @@ function renderAccounts(accounts) {
             }
         };
         
+        const rightGroup = document.createElement('div');
+        rightGroup.className = 'flex items-center gap-1';
+        rightGroup.appendChild(btnDownload);
+        rightGroup.appendChild(btnDelete);
+        
         footer.appendChild(toggleWrapper);
-        footer.appendChild(btnDelete);
+        footer.appendChild(rightGroup);
         
         card.appendChild(header);
         card.appendChild(quotaSection);

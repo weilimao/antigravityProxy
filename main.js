@@ -295,6 +295,9 @@ app.whenReady().then(async () => {
     const statsTracker = require('./src/core/stats');
     statsTracker.updatePath(settings.getActiveDataDirectory());
 
+    const usageTracker = require('./src/core/usageTracker');
+    usageTracker.updatePath(settings.getActiveDataDirectory());
+
     const retryErrorLogger = require('./src/core/retryErrorLogger');
     retryErrorLogger.updatePath(settings.getActiveDataDirectory());
 
@@ -563,6 +566,30 @@ ipcMain.on('accounts:toggle-enabled', (event, id, enabled) => {
     const acc = accountManager.getAccountById(id);
     if (acc) {
         addLogToBuffer(`🔄 Account ${acc.email} is now ${enabled ? 'enabled' : 'disabled'} in the pool.`);
+    }
+});
+
+ipcMain.on('accounts:export-all', async (event) => {
+    const accountExporter = require('./src/core/accountExporter');
+    await accountExporter.exportAll(accountManager.accounts, mainWindow);
+});
+
+ipcMain.on('accounts:export-single', async (event, id) => {
+    const account = accountManager.getAccountById(id);
+    if (account) {
+        const accountExporter = require('./src/core/accountExporter');
+        await accountExporter.exportSingle(account, mainWindow);
+    }
+});
+
+ipcMain.on('accounts:import', async (event) => {
+    const accountExporter = require('./src/core/accountExporter');
+    const imported = await accountExporter.importAccounts(mainWindow);
+    if (imported && imported.length > 0) {
+        const addedCount = accountManager.importAccountsList(imported);
+        if (addedCount > 0) {
+            addLogToBuffer(`📥 [账号导入] 成功导入 ${addedCount} 个账号`);
+        }
     }
 });
 

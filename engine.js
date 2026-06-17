@@ -10,6 +10,7 @@ const { app } = require('electron');
 const { Proxy } = require('http-mitm-proxy');
 const { PassThrough } = require('stream');
 const statsTracker = require('./src/core/stats');
+const usageTracker = require('./src/core/usageTracker');
 const accountManager = require('./src/core/accountManager');
 
 /**
@@ -38,6 +39,7 @@ class ProxyEngine extends EventEmitter {
         // Bind tracker to user data directory
         const settings = require('./src/core/settings');
         statsTracker.init(settings.getActiveDataDirectory());
+        usageTracker.init(settings.getActiveDataDirectory());
         this.stats = statsTracker.stats; // Expose reference for backward compatibility
     }
 

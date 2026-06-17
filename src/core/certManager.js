@@ -4,20 +4,33 @@ const path = require('path');
 const settings = require('./settings');
 
 function checkCertStatus(callback) {
+    let settled = false;
+    const done = (value) => {
+        if (settled) return;
+        settled = true;
+        callback(value);
+    };
+
+    const timeout = setTimeout(() => done(false), 4000);
+    timeout.unref && timeout.unref();
+
     if (process.platform === 'win32') {
-        exec('certutil -user -store ROOT NodeMITMProxyCA', (err, stdout) => {
+        exec('certutil -user -store ROOT NodeMITMProxyCA', { timeout: 3500, windowsHide: true }, (err, stdout) => {
+            clearTimeout(timeout);
             if (!err && stdout && stdout.includes('NodeMITMProxyCA')) {
-                callback(true);
+                done(true);
             } else {
-                callback(false);
+                done(false);
             }
         });
     } else if (process.platform === 'darwin') {
-        exec('security find-certificate -c "NodeMITMProxyCA"', (err) => {
-            callback(!err);
+        exec('security find-certificate -c "NodeMITMProxyCA"', { timeout: 3500 }, (err) => {
+            clearTimeout(timeout);
+            done(!err);
         });
     } else {
-        callback(false);
+        clearTimeout(timeout);
+        done(false);
     }
 }
 
